@@ -138,3 +138,17 @@ Develop parameter estimation model
 Build monitoring and reporting dashboard
 
 This proposal outlines a robust, scalable system that addresses your requirements while providing clear technical direction and business value.
+
+
+# Running
+## Power up Postgres
+docker compose up -d
+
+## Setup Seed Data
+uv run ./scripts/seed_data.py
+
+## Verify Data
+uv run ./scripts/verify_data.py
+
+## Start API Server
+uv run uvicorn api.main:app --reload

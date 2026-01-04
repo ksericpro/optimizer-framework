@@ -1,0 +1,14 @@
+services:
+  db:
+    image: postgres:15
+    container_name: optimizer_db
+    restart: always
+    environment:
+      POSTGRES_USER: optimizer_user
+      POSTGRES_PASSWORD: optimizer_password
+      POSTGRES_DB: optimizer_db
+    ports:
+      - "15433:5432"
+    volumes:
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./pgdata:/var/lib/postgresql/data

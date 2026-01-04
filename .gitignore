@@ -1,0 +1,23 @@
+logs/
+venv/
+*.pyc
+.env
+node_modules
+**/ai_models/
+**/chroma_db/
+**/dumps/
+
+# Terraform
+**/.terraform/*
+**/*.tfstate
+**/*.tfstate.backup
+
+# AWS
+**/.aws/credentials
+**/*.env
+
+# Add to .gitignore
+*.pem
+
+# docker data
+pgdata

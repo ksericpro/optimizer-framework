@@ -1,0 +1,10 @@
+psycopg2-binary
+ortools
+pandas
+numpy
+fastapi
+uvicorn
+sqlalchemy
+python-dotenv
+colorlog
+
