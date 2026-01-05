@@ -1,14 +1,40 @@
 services:
-  db:
-    image: postgres:15
+  optimizer_db:
+    image: postgres:16-alpine
     container_name: optimizer_db
     restart: always
     environment:
-      POSTGRES_USER: optimizer_user
-      POSTGRES_PASSWORD: optimizer_password
-      POSTGRES_DB: optimizer_db
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    networks:
+      - optimizer_backend
     ports:
-      - "15433:5432"
+      - "${DB_PORT}:5432"
     volumes:
       - ./db/schema.sql:/docker-entrypoint-initdb.d/init.sql
       - ./pgdata:/var/lib/postgresql/data
+
+  optimizer_osrm:
+    image: osrm/osrm-backend
+    container_name: optimizer_osrm
+    restart: always
+    networks:
+      - optimizer_backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./osrm_data:/data
+    command: osrm-routed --algorithm mld /data/new-york-latest.osrm
+
+# ----------------------------------------------------
+# VOLUMES (Empty as bind mounts are used)
+# ----------------------------------------------------
+volumes: {}
+
+# ----------------------------------------------------
+# NETWORKS
+# ----------------------------------------------------
+networks:
+  optimizer_backend:
+    external: true # Tells Docker this network already exists

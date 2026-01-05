@@ -7,4 +7,5 @@ uvicorn
 sqlalchemy
 python-dotenv
 colorlog
+requests
 
