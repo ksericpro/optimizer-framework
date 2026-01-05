@@ -152,3 +152,6 @@ uv run ./scripts/verify_data.py
 
 ## Start API Server
 uv run uvicorn api.main:app --reload
+
+## dashboard
+http://localhost:8000/dashboard

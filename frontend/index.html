@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OptiRoute | Delivery Intelligence</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+</head>
+<body class="dark-theme">
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar glass">
+            <div class="logo">
+                <div class="logo-icon"></div>
+                <h1>OptiRoute</h1>
+            </div>
+            
+            <nav class="main-nav">
+                <div class="nav-item active" id="nav-dashboard">
+                    <span class="icon">📊</span>
+                    <span>Dashboard</span>
+                </div>
+                <div class="nav-item" id="nav-drivers">
+                    <span class="icon">🚚</span>
+                    <span>Drivers</span>
+                </div>
+                <div class="nav-item" id="nav-orders">
+                    <span class="icon">📦</span>
+                    <span>Orders</span>
+                </div>
+                <div class="nav-item" id="nav-analytics">
+                    <span class="icon">📈</span>
+                    <span>Analytics</span>
+                </div>
+            </nav>
+
+            <div class="driver-stats-container">
+                <h3>Active Drivers</h3>
+                <div id="driver-list" class="scrollable">
+                    <!-- Driver cards will be injected here -->
+                    <div class="loading-spinner"></div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="top-header glass">
+                <div class="stats-bar">
+                    <div class="stat-card">
+                        <span class="label">Total Orders</span>
+                        <span class="value" id="total-orders-count">0</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="label">Active Routes</span>
+                        <span class="value" id="active-routes-count">0</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="label">Completion Rate</span>
+                        <span class="value">0%</span>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button id="optimize-btn" class="btn btn-primary">
+                        <span class="icon">⚡</span> Run Optimizer
+                    </button>
+                    <div class="user-profile">
+                        <div class="avatar"></div>
+                    </div>
+                </div>
+            </header>
+
+            <div class="dashboard-grid">
+                <!-- Map Section -->
+                <section class="map-section glass">
+                    <div id="map"></div>
+                    <div class="map-overlay">
+                        <div class="map-legend glass">
+                            <div class="legend-item"><span class="dot pending"></span> Pending</div>
+                            <div class="legend-item"><span class="dot assigned"></span> Assigned</div>
+                            <div class="legend-item"><span class="dot delivered"></span> Delivered</div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Activity Feed -->
+                <section class="activity-feed glass">
+                    <div class="feed-header">
+                        <h3>Live Activity</h3>
+                        <span class="live-indicator">● LIVE</span>
+                    </div>
+                    <div id="activity-list" class="scrollable">
+                        <!-- Activity items injected here -->
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="app.js"></script>
+</body>
+</html>

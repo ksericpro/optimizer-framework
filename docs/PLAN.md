@@ -46,13 +46,17 @@ Result: It generates the optimized routes that respect each driver's specific ca
 - [x] Data Model Loop (Historical Performance Analysis)
 - [x] Structured Logging (Rotating logs with colorlog)
 - [x] CORS Middleware (Enabled for Frontend/Mobile App)
+- [x] Real Distance Matrix (OSRM Integration)
+- [x] Frontend Dashboard (Live Map & Stats)
+- [x] Driver Mobile View (Status Updates)
+- [x] Real-time Tracking (Moving Blips)
 
 
 
 # Next Steps
-1.  **Real Distance Matrix:** Replace Euclidean math with actual road distances (OSRM or Google Maps).
-2.  **Order Persistence:** Currently we only fetch `PENDING` orders, but we should make sure the system handles order updates efficiently.
-3.  **Authentication:** Add basic authentication to the API to secure driver/order data.
+1.  **Authentication & JWT:** Add security to the API and a login screen for the driver mobile view.
+2.  **Real-time Tracking:** Implement a socket-based mechanism (Socket.io) to see driver blips moving on the map.
+3.  **Order Persistence & Editing:** Build a UI for manually adjusting orders (drag-and-drop on map).
 
 
 

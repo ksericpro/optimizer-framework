@@ -1,4 +1,4 @@
-import psycopg2
+import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -6,6 +6,7 @@ from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 from api.logger_config import logger
 from api.db_config import get_db_params
+import psycopg2
 
 # Database Connection
 DB_PARAMS = get_db_params()
@@ -48,21 +49,54 @@ def create_data_model(orders, drivers):
     data['time_windows'] = time_windows
     data['service_time'] = 10
     
-    def travel_time(i, j):
-        if i == j: return 0
-        dist = np.sqrt((locations[i][0] - locations[j][0])**2 + 
-                       (locations[i][1] - locations[j][1])**2)
-        return int(dist * 500)
+    # Replace Euclidean math with OSRM
+    logger.info(f"Fetching {data['num_locations']}x{data['num_locations']} matrix from OSRM...")
+    matrix = get_osrm_matrix(locations)
+    
+    if matrix is None:
+        logger.warning("OSRM Matrix failed. Falling back to Euclidean (Simplified).")
+        def travel_time(i, j):
+            if i == j: return 0
+            dist = np.sqrt((locations[i][0] - locations[j][0])**2 + 
+                           (locations[i][1] - locations[j][1])**2)
+            return int(dist * 500)
 
-    matrix = []
-    for i in range(data['num_locations']):
-        row = []
-        for j in range(data['num_locations']):
-            row.append(travel_time(i, j))
-        matrix.append(row)
+        matrix = []
+        for i in range(data['num_locations']):
+            row = []
+            for j in range(data['num_locations']):
+                row.append(travel_time(i, j))
+            matrix.append(row)
     
     data['time_matrix'] = matrix
     return data
+
+def get_osrm_matrix(locations):
+    """
+    Fetches the travel time matrix from OSRM.
+    locations: List of (lat, lng) tuples
+    Returns: 2D list of durations in minutes (rounded)
+    """
+    # OSRM expects {lng},{lat}
+    coords = ";".join([f"{lng},{lat}" for lat, lng in locations])
+    url = f"http://localhost:5000/table/v1/driving/{coords}?annotations=duration"
+    
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if data['code'] != 'Ok':
+            logger.error(f"OSRM Error: {data.get('message', 'Unknown error')}")
+            return None
+        
+        # OSRM returns durations in seconds. Convert to minutes.
+        durations = data['durations']
+        matrix = []
+        for row in durations:
+            matrix.append([int(d / 60) for d in row])
+        return matrix
+    except Exception as e:
+        logger.error(f"Failed to fetch OSRM matrix: {e}")
+        return None
 
 def run_optimization():
     orders, drivers = get_data_from_db()
