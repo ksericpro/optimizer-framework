@@ -19,14 +19,11 @@ def seed_data():
         print("Connected to database successfully.")
 
         # 1. Seed Vehicles
-        vehicles = [
-            ('PLATE-001', 'VAN', 500.0, 10.0),
-            ('PLATE-002', 'TRUCK', 2000.0, 40.0),
-            ('PLATE-003', 'BIKE', 20.0, 0.5)
-        ]
-        
+        vehicle_types = [('VAN', 500.0, 10.0), ('TRUCK', 2000.0, 40.0), ('BIKE', 20.0, 0.5)]
         vehicle_ids = []
-        for plate, vtype, weight, vol in vehicles:
+        for i in range(10):
+            vtype, weight, vol = random.choice(vehicle_types)
+            plate = f"SGP-{100 + i}Z"
             cur.execute(
                 "INSERT INTO vehicles (plate_number, type, capacity_weight, capacity_volume) VALUES (%s, %s, %s, %s) RETURNING id",
                 (plate, vtype, weight, vol)
@@ -35,14 +32,15 @@ def seed_data():
         print(f"Inserted {len(vehicle_ids)} vehicles.")
 
         # 2. Seed Drivers
-        drivers = [
-            ('John Doe', '+1234567890', 25),
-            ('Jane Smith', '+1987654321', 15),
-            ('Bob Wilson', '+1122334455', 30)
+        driver_names = [
+            'John Doe', 'Jane Smith', 'Bob Wilson', 'Alice Tan', 'Charlie Lim',
+            'David Wong', 'Eve Ng', 'Frank Lee', 'Grace Seah', 'Henry Koh'
         ]
         
         driver_ids = []
-        for name, phone, max_jobs in drivers:
+        for i, name in enumerate(driver_names):
+            phone = f"+65 {random.randint(80000000, 99999999)}"
+            max_jobs = random.randint(15, 35)
             cur.execute(
                 "INSERT INTO drivers (full_name, phone_number, max_jobs_per_day) VALUES (%s, %s, %s) RETURNING id",
                 (name, phone, max_jobs)
@@ -50,16 +48,16 @@ def seed_data():
             driver_ids.append(cur.fetchone()[0])
         print(f"Inserted {len(driver_ids)} drivers.")
 
-        # 3. Seed Orders (around a central point, e.g., NYC)
-        # Center: 40.7128, -74.0060 (NYC)
-        center_lat, center_lng = 40.7128, -74.0060
+        # 3. Seed Orders (around a central point, e.g., Singapore)
+        # Center: 1.3521, 103.8198 (Singapore)
+        center_lat, center_lng = 1.3521, 103.8198
         
         for i in range(50):
             ext_id = f"ORD-{1000 + i}"
-            address = f"{random.randint(1, 999)} Sample St, New York, NY"
+            address = f"Blk {random.randint(1, 999)} Orchard Road, Singapore"
             # Random offset ~5-10km
-            lat = center_lat + random.uniform(-0.05, 0.05)
-            lng = center_lng + random.uniform(-0.05, 0.05)
+            lat = center_lat + random.uniform(-0.08, 0.08)
+            lng = center_lng + random.uniform(-0.08, 0.08)
             weight = round(random.uniform(0.5, 50.0), 2)
             volume = round(random.uniform(0.01, 1.0), 2)
             

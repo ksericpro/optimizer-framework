@@ -1,10 +1,17 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile
+from fastapi.responses import StreamingResponse
+import io
+import csv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
+import socketio
+import asyncio
 from jose import JWTError, jwt
 import bcrypt
 import psycopg2
+import os
+import uuid
 from psycopg2.extras import RealDictCursor
 from scripts.optimizer_prototype import run_optimization
 from scripts.data_model_loop import run_data_model_loop
@@ -49,6 +56,67 @@ async def get_current_driver(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
 
 app = FastAPI(title="Delivery Optimizer API")
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+socket_app = socketio.ASGIApp(sio, app)
+# Backwards compatibility mount
+app.mount("/ws", socket_app)
+
+# Background Task for Risks
+async def check_delivery_risks():
+    """Periodically checks for late deliveries and capacity issues."""
+    while True:
+        try:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            
+            # 1. Check for Late Deliveries
+            cur.execute("""
+                SELECT rs.id, rs.delivery_address, r.driver_id, d.full_name, rs.estimated_arrival_time
+                FROM route_stops rs
+                JOIN routes r ON rs.route_id = r.id
+                JOIN drivers d ON r.driver_id = d.id
+                WHERE rs.status = 'ASSIGNED' 
+                AND rs.estimated_arrival_time < NOW() + INTERVAL '15 minutes'
+                AND r.planned_date = CURRENT_DATE
+            """)
+            risks = cur.fetchall()
+            
+            for risk in risks:
+                await sio.emit('alert', {
+                    'type': 'LATE_RISK',
+                    'message': f"Late Risk: Delivery to {risk['delivery_address']} for {risk['full_name']}",
+                    'driver_id': str(risk['driver_id']),
+                    'stop_id': str(risk['id'])
+                })
+
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"Risk Monitor Error: {e}")
+        
+        await asyncio.sleep(60) # Check every minute
+
+async def data_model_daily_task():
+    """Runs the Data Model loop every day at midnight."""
+    while True:
+        now = datetime.now()
+        # Calculate seconds until next midnight
+        next_run = (now + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+        wait_seconds = (next_run - now).total_seconds()
+        
+        logger.info(f"Data Model scheduled to run in {wait_seconds/3600:.2f} hours.")
+        await asyncio.sleep(wait_seconds)
+        
+        try:
+            logger.info("Starting scheduled daily Data Model run...")
+            run_data_model_loop()
+        except Exception as e:
+            logger.error(f"Scheduled Data Model Error: {e}")
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(check_delivery_risks())
+    asyncio.create_task(data_model_daily_task())
 
 # Add CORS Middleware
 app.add_middleware(
@@ -70,6 +138,21 @@ app.mount("/dashboard", StaticFiles(directory="frontend", html=True), name="fron
 @app.get("/")
 async def root():
     return {"message": "Delivery Optimizer API is running"}
+
+@app.post("/admin/run-data-model")
+async def manual_data_model_trigger():
+    """Manually triggers the Data Model loop."""
+    result = run_data_model_loop()
+    if result["status"] == "error":
+        raise HTTPException(status_code=500, detail=result["message"])
+    return result
+
+# Create uploads directory if it doesn't exist
+UPLOAD_DIR = "uploads"
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
+
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.post("/login")
@@ -114,6 +197,104 @@ async def trigger_optimization():
         "data_model": dm_result,
         "optimizer": opt_result
     }
+
+
+@app.get("/orders")
+async def get_orders(status: Optional[str] = None):
+    """Fetches all orders, optionally filtered by status."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        if status:
+            cur.execute("SELECT * FROM orders WHERE status = %s ORDER BY created_at DESC", (status.upper(),))
+        else:
+            cur.execute("SELECT * FROM orders ORDER BY created_at DESC")
+        orders = cur.fetchall()
+        cur.close()
+        conn.close()
+        return orders
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/orders")
+async def create_order(delivery_address: str, lat: float, lng: float, priority: int = 1):
+    """Creates a new delivery order."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO orders (delivery_address, lat, lng, priority) VALUES (%s, %s, %s, %s) RETURNING id",
+            (delivery_address, lat, lng, priority)
+        )
+        order_id = cur.fetchone()['id']
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"id": order_id, "message": "Order created"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/orders/{order_id}")
+async def update_order(order_id: str, delivery_address: Optional[str] = None, lat: Optional[float] = None, lng: Optional[float] = None, status: Optional[str] = None):
+    """Updates an existing order's details or status."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        updates = []
+        params = []
+        if delivery_address:
+            updates.append("delivery_address = %s")
+            params.append(delivery_address)
+        if lat:
+            updates.append("lat = %s")
+            params.append(lat)
+        if lng:
+            updates.append("lng = %s")
+            params.append(lng)
+        if status:
+            updates.append("status = %s")
+            params.append(status.upper())
+            
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+            
+        params.append(order_id)
+        query = f"UPDATE orders SET {', '.join(updates)} WHERE id = %s"
+        cur.execute(query, params)
+        
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Order not found")
+            
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Order updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/orders/{order_id}")
+async def delete_order(order_id: str):
+    """Deletes an order (only if it's PENDING and not in a route)."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        # Check if order is in a route
+        cur.execute("SELECT 1 FROM route_stops WHERE order_id = %s", (order_id,))
+        if cur.fetchone():
+             raise HTTPException(status_code=400, detail="Cannot delete order that is already assigned to a route")
+
+        cur.execute("DELETE FROM orders WHERE id = %s", (order_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Order not found")
+            
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Order deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/routes/today")
@@ -231,6 +412,61 @@ async def update_stop_status(stop_id: str, status: str, current_driver: str = De
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/stops/{stop_id}/pod")
+async def update_stop_pod(
+    stop_id: str, 
+    photo: Optional[UploadFile] = File(None), 
+    signature: Optional[str] = None,
+    current_driver: str = Depends(get_current_driver)
+):
+    """Saves Proof of Delivery (Photo and/or Signature) for a stop."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        # Security: Verify ownership
+        cur.execute("""
+            SELECT r.driver_id FROM routes r
+            JOIN route_stops rs ON rs.route_id = r.id
+            WHERE rs.id = %s
+        """, (stop_id,))
+        owner = cur.fetchone()
+        
+        if not owner or str(owner['driver_id']) != current_driver:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+        photo_url = None
+        if photo:
+            file_ext = photo.filename.split(".")[-1] if "." in photo.filename else "jpg"
+            file_name = f"{uuid.uuid4()}.{file_ext}"
+            file_path = os.path.join(UPLOAD_DIR, file_name)
+            
+            content = await photo.read()
+            with open(file_path, "wb") as f:
+                f.write(content)
+            photo_url = f"/uploads/{file_name}"
+
+        updates = []
+        params = []
+        if photo_url:
+            updates.append("pod_photo_url = %s")
+            params.append(photo_url)
+        if signature:
+            updates.append("pod_signature = %s")
+            params.append(signature)
+        
+        if updates:
+            params.append(stop_id)
+            query = f"UPDATE route_stops SET {', '.join(updates)} WHERE id = %s"
+            cur.execute(query, params)
+            conn.commit()
+
+        cur.close()
+        conn.close()
+        return {"message": "POD saved", "photo_url": photo_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.patch("/drivers/{driver_id}/location")
 async def update_driver_location(driver_id: str, lat: float, lng: float, current_driver: str = Depends(get_current_driver)):
@@ -248,8 +484,23 @@ async def update_driver_location(driver_id: str, lat: float, lng: float, current
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Driver not found")
         conn.commit()
+
+        # Get driver name for the event
+        cur.execute("SELECT full_name FROM drivers WHERE id = %s", (driver_id,))
+        driver_row = cur.fetchone()
+        full_name = driver_row['full_name'] if driver_row else f"Driver {driver_id}"
+        
         cur.close()
         conn.close()
+
+        # Emit the update via WebSocket
+        await sio.emit('location_update', {
+            'driver_id': driver_id,
+            'full_name': full_name,
+            'lat': lat,
+            'lng': lng
+        })
+
         return {"message": "Location updated"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -266,5 +517,98 @@ async def get_all_driver_locations():
         cur.close()
         conn.close()
         return drivers
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/analytics/summary")
+async def get_analytics_summary():
+    """Fetches aggregated performance metrics for all drivers over time."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT date, 
+                   SUM(total_orders_completed) as total_completed,
+                   AVG(average_service_time) as avg_service_time,
+                   AVG(efficiency_score) as avg_efficiency
+            FROM performance_metrics
+            GROUP BY date
+            ORDER BY date ASC
+            LIMIT 30
+        """)
+        history = cur.fetchall()
+        cur.close()
+        conn.close()
+        return history
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/analytics/drivers/{driver_id}")
+async def get_driver_analytics(driver_id: str):
+    """Fetches performance metrics for a specific driver."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT date, total_orders_completed, average_service_time, efficiency_score
+            FROM performance_metrics
+            WHERE driver_id = %s
+            ORDER BY date ASC
+            LIMIT 30
+        """, (driver_id,))
+        stats = cur.fetchall()
+        cur.close()
+        conn.close()
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/daily")
+async def get_daily_report():
+    """Generates a CSV report for today's deliveries."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 
+                d.full_name as driver,
+                rs.delivery_address,
+                rs.estimated_arrival_time,
+                rs.actual_arrival_time,
+                rs.status,
+                rs.pod_photo_url,
+                rs.feedback_notes
+            FROM route_stops rs
+            JOIN routes r ON rs.route_id = r.id
+            JOIN drivers d ON r.driver_id = d.id
+            WHERE r.planned_date = CURRENT_DATE
+            ORDER BY d.full_name, rs.sequence_number
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['Driver', 'Address', 'Estimated Arrival', 'Actual Arrival', 'Status', 'POD Photo', 'Notes'])
+        
+        for row in rows:
+            writer.writerow([
+                row['driver'],
+                row['delivery_address'],
+                row['estimated_arrival_time'],
+                row['actual_arrival_time'],
+                row['status'],
+                f"http://localhost:8000{row['pod_photo_url']}" if row['pod_photo_url'] else 'N/A',
+                row['feedback_notes']
+            ])
+
+        output.seek(0)
+        return StreamingResponse(
+            output,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=daily_report.csv"}
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -106,6 +106,45 @@
             color: #666;
             cursor: not-allowed;
         }
+
+        /* POD Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 1000;
+            display: none;
+            flex-direction: column;
+            padding: 20px;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .signature-pad {
+            background: white;
+            border-radius: 10px;
+            height: 200px;
+            margin: 20px 0;
+            touch-action: none;
+        }
+
+        .preview-img {
+            max-width: 100%;
+            border-radius: 10px;
+            margin-top: 10px;
+            display: none;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
     </style>
 </head>
 
@@ -130,7 +169,8 @@
                 credentials</p>
         </div>
         <p style="margin-top: 20px; color: var(--text-dim); font-size: 0.8rem;">Use <b>john/jane/bob</b> and
-            <b>password123</b></p>
+            <b>password123</b>
+        </p>
     </div>
 
     <!-- Main App Content (Hidden by default) -->
@@ -146,6 +186,30 @@
         <div id="stops-list" class="scrollable">
             <!-- Stops injected here -->
         </div>
+    </div>
+
+    <!-- POD Modal -->
+    <div id="pod-modal" class="modal">
+        <div class="modal-header">
+            <h3>Proof of Delivery</h3>
+            <button class="logout-btn" onclick="closePod()">Cancel</button>
+        </div>
+
+        <div class="form-group">
+            <label>Capture Photo</label>
+            <input type="file" id="pod-photo" accept="image/*" capture="environment" style="display:none">
+            <button class="action-btn" onclick="document.getElementById('pod-photo').click()">📸 Take Photo</button>
+            <img id="photo-preview" class="preview-img">
+        </div>
+
+        <div class="form-group">
+            <label>Customer Signature</label>
+            <canvas id="signature-pad" class="signature-pad"></canvas>
+            <button class="btn-secondary" style="width:100%; padding:10px;" onclick="clearSignature()">Clear
+                Signature</button>
+        </div>
+
+        <button id="submit-pod-btn" class="action-btn" style="margin-top: auto;">Complete Delivery</button>
     </div>
 
     <script src="driver.js"></script>

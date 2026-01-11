@@ -1,9 +1,12 @@
-const API_BASE = 'http://localhost:8000';
+const API_BASE = '/api';
 
 const loginScreen = document.getElementById('login-screen');
 const appContent = document.getElementById('driver-app-content');
 const loginForm = document.getElementById('login-form');
 const stopsList = document.getElementById('stops-list');
+let currentStopId = null;
+let signaturePad, canvas, ctx;
+let isDrawing = false;
 
 // 1. Check if already logged in
 document.addEventListener('DOMContentLoaded', () => {
@@ -13,7 +16,75 @@ document.addEventListener('DOMContentLoaded', () => {
     if (token && driverId) {
         showApp(driverId);
     }
+    initSignaturePad();
+    setupPodListeners();
 });
+
+function initSignaturePad() {
+    canvas = document.getElementById('signature-pad');
+    if (!canvas) return;
+    ctx = canvas.getContext('2d');
+
+    const resize = () => {
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+    };
+    window.addEventListener('resize', resize);
+    resize();
+
+    const getPos = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: (e.clientX || e.touches[0].clientX) - rect.left,
+            y: (e.clientY || e.touches[0].clientY) - rect.top
+        };
+    };
+
+    const start = (e) => {
+        isDrawing = true;
+        const pos = getPos(e);
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y);
+    };
+
+    const move = (e) => {
+        if (!isDrawing) return;
+        const pos = getPos(e);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+    };
+
+    const stop = () => isDrawing = false;
+
+    canvas.addEventListener('mousedown', start);
+    canvas.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', stop);
+
+    canvas.addEventListener('touchstart', start);
+    canvas.addEventListener('touchmove', move);
+    canvas.addEventListener('touchend', stop);
+
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+}
+
+function setupPodListeners() {
+    document.getElementById('pod-photo').onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = (re) => {
+                const img = document.getElementById('photo-preview');
+                img.src = re.target.result;
+                img.style.display = 'block';
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+
+    document.getElementById('submit-pod-btn').onclick = savePod;
+}
 
 // 2. Handle Login
 loginForm.addEventListener('submit', async (e) => {
@@ -98,7 +169,7 @@ function renderStops(stops) {
             <div class="stop-address">${stop.delivery_address}</div>
             <div class="stop-meta">ETA: ${new Date(stop.estimated_arrival_time).toLocaleTimeString()}</div>
             <button class="action-btn ${isDelivered ? 'done' : ''}" 
-                    onclick="updateStatus('${stop.stop_id}', this)" 
+                    onclick="openPodModal('${stop.stop_id}')" 
                     ${isDelivered ? 'disabled' : ''}>
                 ${isDelivered ? '✓ DELIVERED' : 'MARK AS DELIVERED'}
             </button>
@@ -108,28 +179,75 @@ function renderStops(stops) {
 }
 
 // 4. Update Status
-async function updateStatus(stopId, btn) {
+async function updateStatus(stopId) {
     const token = localStorage.getItem('token');
-    btn.disabled = true;
-    btn.innerText = 'Updating...';
-
     try {
         const res = await fetch(`${API_BASE}/stops/${stopId}/status?status=DELIVERED`, {
             method: 'PATCH',
             headers: { 'Authorization': `Bearer ${token}` }
         });
+        return res.ok;
+    } catch (err) {
+        console.error(err);
+        return false;
+    }
+}
 
-        if (res.ok) {
-            btn.closest('.stop-card').classList.add('delivered');
-            btn.classList.add('done');
-            btn.innerText = '✓ DELIVERED';
+function openPodModal(stopId) {
+    currentStopId = stopId;
+    document.getElementById('pod-modal').classList.add('active');
+    clearSignature();
+    document.getElementById('pod-photo').value = '';
+    document.getElementById('photo-preview').style.display = 'none';
+}
+
+function closePod() {
+    document.getElementById('pod-modal').classList.remove('active');
+}
+
+function clearSignature() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+async function savePod() {
+    const btn = document.getElementById('submit-pod-btn');
+    const token = localStorage.getItem('token');
+    const photoFile = document.getElementById('pod-photo').files[0];
+    const signatureBase64 = canvas.toDataURL(); // Empty canvas if not drawn
+
+    btn.disabled = true;
+    btn.innerText = 'Uploading Proof...';
+
+    try {
+        // 1. Upload POD
+        const formData = new FormData();
+        if (photoFile) formData.append('photo', photoFile);
+        formData.append('signature', signatureBase64);
+
+        const podRes = await fetch(`${API_BASE}/stops/${currentStopId}/pod`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` },
+            body: formData
+        });
+
+        if (podRes.ok) {
+            // 2. Mark as delivered
+            const success = await updateStatus(currentStopId);
+            if (success) {
+                closePod();
+                loadDriverRoute(localStorage.getItem('driver_id'));
+            } else {
+                alert('POD saved but failed to update status.');
+            }
         } else {
-            btn.disabled = false;
-            btn.innerText = 'Error! Try Again';
+            alert('Failed to save POD.');
         }
     } catch (err) {
+        console.error(err);
+        alert('Network error while saving POD.');
+    } finally {
         btn.disabled = false;
-        btn.innerText = 'Network Error';
+        btn.innerText = 'Complete Delivery';
     }
 }
 

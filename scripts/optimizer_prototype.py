@@ -13,30 +13,48 @@ DB_PARAMS = get_db_params()
 
 def get_data_from_db():
     conn = psycopg2.connect(**DB_PARAMS)
-    query = """
-        SELECT id, lat, lng, time_window_start, time_window_end 
+    # Fetch orders with demands
+    query_orders = """
+        SELECT id, lat, lng, time_window_start, time_window_end, weight, volume
         FROM orders 
         WHERE status = 'PENDING'
         ORDER BY created_at DESC 
-        LIMIT 50
+        LIMIT 100
     """
-    orders = pd.read_sql(query, conn)
-    drivers = pd.read_sql("SELECT id, full_name, max_jobs_per_day FROM drivers WHERE is_active = TRUE", conn)
+    orders = pd.read_sql(query_orders, conn)
+    
+    # Fetch drivers and their assigned vehicle capacities
+    query_drivers = """
+        SELECT d.id, d.full_name, d.max_jobs_per_day,
+               v.capacity_weight, v.capacity_volume
+        FROM drivers d
+        CROSS JOIN vehicles v -- Simplified: assuming available fleet
+        WHERE d.is_active = TRUE AND v.is_active = TRUE
+        LIMIT (SELECT COUNT(*) FROM drivers WHERE is_active = TRUE)
+    """
+    drivers = pd.read_sql(query_drivers, conn)
     conn.close()
     return orders, drivers
 
 def create_data_model(orders, drivers):
     data = {}
-    depot_lat, depot_lng = 40.7128, -74.0060
+    depot_lat, depot_lng = 1.3521, 103.8198
     
     locations = [(depot_lat, depot_lng)]
+    data['demands_weight'] = [0] # depot
+    data['demands_volume'] = [0]
+    
     for _, row in orders.iterrows():
         locations.append((row['lat'], row['lng']))
+        data['demands_weight'].append(row.get('weight', 1.0))
+        data['demands_volume'].append(row.get('volume', 1.0))
     
     data['locations'] = locations
     data['num_locations'] = len(locations)
     data['num_vehicles'] = len(drivers)
     data['depot'] = 0
+    data['vehicle_capacities_weight'] = drivers['capacity_weight'].tolist()
+    data['vehicle_capacities_volume'] = drivers['capacity_volume'].tolist()
     
     base_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
     
@@ -129,6 +147,38 @@ def run_optimization():
         if location_idx == 0: continue 
         index = manager.NodeToIndex(location_idx)
         time_dimension.CumulVar(index).SetRange(time_window[0], time_window[1])
+
+    # 1. Capacity Constraints (Weight)
+    def weight_callback(from_index):
+        node = manager.IndexToNode(from_index)
+        return int(data['demands_weight'][node])
+    
+    weight_callback_index = routing.RegisterUnaryTransitCallback(weight_callback)
+    routing.AddDimensionWithVehicleCapacity(
+        weight_callback_index, 0, data['vehicle_capacities_weight'], True, 'Weight'
+    )
+
+    # 2. Capacity Constraints (Volume)
+    def volume_callback(from_index):
+        node = manager.IndexToNode(from_index)
+        return int(data['demands_volume'][node])
+    
+    volume_callback_index = routing.RegisterUnaryTransitCallback(volume_callback)
+    routing.AddDimensionWithVehicleCapacity(
+        volume_callback_index, 0, data['vehicle_capacities_volume'], True, 'Volume'
+    )
+
+    # 3. Driver Breaks (30 mins at 12:00 PM = 240 mins from 8 AM start)
+    break_time = 30
+    solver = routing.solver()
+    for vehicle_id in range(data['num_vehicles']):
+        # Optional: Add break interval at midday
+        break_start = 240 # 12:00 PM
+        break_var = solver.FixedDurationIntervalVar(break_start, break_start, break_time, False, 'Break')
+        time_dimension.SetBreakIntervalsOfVehicle(
+            [break_var],
+            vehicle_id, []
+        )
 
     penalty = 10000
     for node in range(1, data['num_locations']):

@@ -25,15 +25,19 @@ def setup_auth():
     hashed = hash_password(password)
     
     try:
-        # John Doe
-        cur.execute("UPDATE drivers SET username = 'john', password_hash = %s WHERE full_name = 'John Doe'", (hashed,))
-        # Jane Smith
-        cur.execute("UPDATE drivers SET username = 'jane', password_hash = %s WHERE full_name = 'Jane Smith'", (hashed,))
-        # Bob Wilson
-        cur.execute("UPDATE drivers SET username = 'bob', password_hash = %s WHERE full_name = 'Bob Wilson'", (hashed,))
+        cur.execute("SELECT id, full_name FROM drivers")
+        drivers = cur.fetchall()
+        
+        for driver_id, full_name in drivers:
+            # Create a simple username from the first name
+            username = full_name.split(' ')[0].lower()
+            cur.execute(
+                "UPDATE drivers SET username = %s, password_hash = %s WHERE id = %s",
+                (username, hashed, driver_id)
+            )
         
         conn.commit()
-        print("Seed credentials set for drivers (password: password123).")
+        print(f"Seed credentials set for {len(drivers)} drivers (password: password123).")
     except Exception as e:
         conn.rollback()
         print(f"Error seeding credentials: {e}")

@@ -77,8 +77,8 @@ def run_simulation():
         print("No routes found for today.")
         return
 
-    steps_between_stops = 50
-    delay = 1.0
+    steps_between_stops = 20
+    delay = 0.2
 
     while True:
         max_steps = steps_between_stops * (max(len(r['path']) for r in routes) - 1)

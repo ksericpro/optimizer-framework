@@ -4,37 +4,66 @@ services:
     container_name: optimizer_db
     restart: always
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: ${DB_USER:-optimizer_user}
+      POSTGRES_DB: ${DB_NAME:-optimizer_db}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-optimizer_password}
     networks:
-      - optimizer_backend
+      - optimizer_network
     ports:
-      - "${DB_PORT}:5432"
+      - "${DB_PORT:-15433}:5432"
     volumes:
       - ./db/schema.sql:/docker-entrypoint-initdb.d/init.sql
-      - ./pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
 
   optimizer_osrm:
     image: osrm/osrm-backend
     container_name: optimizer_osrm
     restart: always
     networks:
-      - optimizer_backend
+      - optimizer_network
     ports:
       - "5000:5000"
     volumes:
       - ./osrm_data:/data
-    command: osrm-routed --algorithm mld /data/new-york-latest.osrm
+    command: osrm-routed --algorithm mld /data/singapore-latest.osrm
 
-# ----------------------------------------------------
-# VOLUMES (Empty as bind mounts are used)
-# ----------------------------------------------------
-volumes: {}
+  optimizer_api:
+    build: .
+    container_name: optimizer_api
+    restart: always
+    environment:
+      DB_HOST: optimizer_db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-optimizer_db}
+      DB_USER: ${DB_USER:-optimizer_user}
+      DB_PASSWORD: ${DB_PASSWORD:-optimizer_password}
+    depends_on:
+      - optimizer_db
+      - optimizer_osrm
+    networks:
+      - optimizer_network
+    volumes:
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
 
-# ----------------------------------------------------
-# NETWORKS
-# ----------------------------------------------------
+  optimizer_frontend:
+    image: nginx:alpine
+    container_name: optimizer_frontend
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - optimizer_api
+    networks:
+      - optimizer_network
+
+volumes:
+  pgdata:
+
+
 networks:
-  optimizer_backend:
-    external: true # Tells Docker this network already exists
+  optimizer_network:
+    driver: bridge

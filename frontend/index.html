@@ -1,110 +1,183 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OptiRoute | Delivery Intelligence</title>
-    <link rel="stylesheet" href="style.css">
-    <!-- Google Fonts -->
+    <title>Delivery Optimizer - Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+
     <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
+
 <body class="dark-theme">
     <div class="app-container">
-        <!-- Sidebar -->
+        <!-- Sidebar Navigation -->
         <aside class="sidebar glass">
             <div class="logo">
                 <div class="logo-icon"></div>
-                <h1>OptiRoute</h1>
+                <h1>Antigravity</h1>
             </div>
-            
+
             <nav class="main-nav">
                 <div class="nav-item active" id="nav-dashboard">
-                    <span class="icon">📊</span>
-                    <span>Dashboard</span>
-                </div>
-                <div class="nav-item" id="nav-drivers">
-                    <span class="icon">🚚</span>
-                    <span>Drivers</span>
-                </div>
-                <div class="nav-item" id="nav-orders">
-                    <span class="icon">📦</span>
-                    <span>Orders</span>
+                    <span class="icon">📊</span> Dashboard
                 </div>
                 <div class="nav-item" id="nav-analytics">
-                    <span class="icon">📈</span>
-                    <span>Analytics</span>
+                    <span class="icon">📈</span> Analytics
+                </div>
+                <div class="nav-item">
+                    <span class="icon">🚚</span> Fleet
+                </div>
+                <div class="nav-item">
+                    <span class="icon">⚙️</span> Settings
                 </div>
             </nav>
 
             <div class="driver-stats-container">
                 <h3>Active Drivers</h3>
                 <div id="driver-list" class="scrollable">
-                    <!-- Driver cards will be injected here -->
-                    <div class="loading-spinner"></div>
+                    <!-- Drivers list will be injected here -->
                 </div>
             </div>
         </aside>
 
-        <!-- Main Content -->
+        <!-- Main Workspace -->
         <main class="main-content">
             <header class="top-header glass">
                 <div class="stats-bar">
                     <div class="stat-card">
-                        <span class="label">Total Orders</span>
-                        <span class="value" id="total-orders-count">0</span>
+                        <span class="label">Today's Volume</span>
+                        <span class="value" id="total-orders">--</span>
                     </div>
                     <div class="stat-card">
-                        <span class="label">Active Routes</span>
-                        <span class="value" id="active-routes-count">0</span>
-                    </div>
-                    <div class="stat-card">
-                        <span class="label">Completion Rate</span>
-                        <span class="value">0%</span>
+                        <span class="label">Efficiency</span>
+                        <span class="value" id="efficiency-score">--%</span>
                     </div>
                 </div>
+
                 <div class="actions">
+                    <button id="download-report-btn" class="btn btn-secondary">
+                        <span class="icon">📥</span> Download Report
+                    </button>
+                    <button id="add-order-btn" class="btn btn-secondary">
+                        <span class="icon">➕</span> Add Order
+                    </button>
                     <button id="optimize-btn" class="btn btn-primary">
                         <span class="icon">⚡</span> Run Optimizer
                     </button>
-                    <div class="user-profile">
-                        <div class="avatar"></div>
-                    </div>
                 </div>
             </header>
 
-            <div class="dashboard-grid">
-                <!-- Map Section -->
-                <section class="map-section glass">
-                    <div id="map"></div>
-                    <div class="map-overlay">
-                        <div class="map-legend glass">
-                            <div class="legend-item"><span class="dot pending"></span> Pending</div>
-                            <div class="legend-item"><span class="dot assigned"></span> Assigned</div>
-                            <div class="legend-item"><span class="dot delivered"></span> Delivered</div>
+            <div id="dashboard-view">
+                <div class="dashboard-grid">
+                    <!-- Map Section -->
+                    <section class="map-section glass">
+                        <div id="map"></div>
+                        <div class="map-overlay">
+                            <div class="map-legend glass">
+                                <div class="legend-item"><span class="dot pending"></span> Pending</div>
+                                <div class="legend-item"><span class="dot assigned"></span> Assigned</div>
+                                <div class="legend-item"><span class="dot delivered"></span> Delivered</div>
+                            </div>
                         </div>
-                    </div>
-                </section>
+                    </section>
 
-                <!-- Activity Feed -->
-                <section class="activity-feed glass">
-                    <div class="feed-header">
-                        <h3>Live Activity</h3>
-                        <span class="live-indicator">● LIVE</span>
-                    </div>
-                    <div id="activity-list" class="scrollable">
-                        <!-- Activity items injected here -->
-                    </div>
-                </section>
+                    <!-- Activity Feed & Pending Orders -->
+                    <section class="info-panel glass">
+                        <div class="tabs">
+                            <button class="tab-btn active" id="tab-activity">Activity</button>
+                            <button class="tab-btn" id="tab-pending">Pending (<span
+                                    id="pending-count">0</span>)</button>
+                            <button class="tab-btn" id="tab-schedule">Schedule</button>
+                        </div>
+
+                        <div id="activity-pane" class="tab-pane active scrollable">
+                            <div id="activity-list"></div>
+                        </div>
+
+                        <div id="pending-pane" class="tab-pane scrollable">
+                            <div id="pending-list">
+                                <!-- Pending orders will be injected here -->
+                            </div>
+                        </div>
+
+                        <div id="schedule-pane" class="tab-pane scrollable">
+                            <div id="schedule-header">
+                                <h4 id="schedule-driver-name">Select a driver</h4>
+                            </div>
+                            <div id="schedule-timeline" class="timeline">
+                                <!-- Timeline items injected here -->
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Analytics View -->
+            <div id="analytics-view" style="display: none;">
+                <div class="analytics-grid">
+                    <section class="chart-container glass">
+                        <h3>Orders Completed (Last 30 Days)</h3>
+                        <canvas id="completed-orders-chart"></canvas>
+                    </section>
+                    <section class="chart-container glass">
+                        <h3>Avg Service Time (Minutes)</h3>
+                        <canvas id="service-time-chart"></canvas>
+                    </section>
+                    <section class="chart-container glass">
+                        <h3>Efficiency Trend</h3>
+                        <canvas id="efficiency-chart"></canvas>
+                    </section>
+                </div>
             </div>
         </main>
     </div>
 
+    <div id="alert-toast-container"></div>
+
+    <!-- Order Editor Overlay -->
+    <div id="order-editor" class="editor-overlay glass">
+        <div class="editor-header">
+            <h3>Edit Order</h3>
+            <button class="close-btn" id="close-editor">&times;</button>
+        </div>
+        <div class="editor-body">
+            <input type="hidden" id="edit-order-id">
+            <div class="form-group">
+                <label>Address</label>
+                <input type="text" id="edit-address" placeholder="Enter delivery address">
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Latitude</label>
+                    <input type="number" id="edit-lat" step="any">
+                </div>
+                <div class="form-group">
+                    <label>Longitude</label>
+                    <input type="number" id="edit-lng" step="any">
+                </div>
+            </div>
+            <div class="form-actions">
+                <button id="save-order" class="btn btn-primary">Save Changes</button>
+                <button id="delete-order" class="btn btn-danger">Delete Order</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- Socket.io -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="app.js"></script>
 </body>
+
 </html>

@@ -8,4 +8,7 @@ sqlalchemy
 python-dotenv
 colorlog
 requests
-
+python-socketio
+fastapi-socketio
+python-jose[cryptography]
+python-multipart
