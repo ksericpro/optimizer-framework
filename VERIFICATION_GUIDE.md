@@ -13,17 +13,17 @@ This guide provides step-by-step instructions to verify every major feature of t
     ```
 2.  **Update Schema (POD Support)**:
     ```powershell
-    python -m scripts.update_db_pod
+    uv run python -m scripts.update_db_pod
     ```
 3.  **Seed the Fleet (10 Drivers & 50 Singapore Orders)**:
     ```powershell
-    python -m scripts.seed_data
-    python -m scripts.setup_auth
+    uv run python -m scripts.seed_data
+    uv run python -m scripts.setup_auth
     ```
 4.  **Verify Accessibility**:
-    - Dashboard: Open `http://localhost/` in your browser. (Map should center on Singapore).
-    - Driver App: Open `http://localhost/driver` in your browser.
-    - API Health: Check `http://localhost/api/` (should return "Delivery Optimizer API is running").
+    - Dashboard: Open `http://localhost:8480/` in your browser. (Map should center on Singapore).
+    - Driver App: Open `http://localhost:8480/driver` in your browser.
+    - API Health: Check `http://localhost:8480/api/` (should return "Delivery Optimizer API is running").
 
 ---
 

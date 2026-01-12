@@ -1,4 +1,4 @@
-const API_BASE = '/api';
+const API_BASE = 'http://localhost:8011';
 
 const loginScreen = document.getElementById('login-screen');
 const appContent = document.getElementById('driver-app-content');

@@ -25,9 +25,10 @@ services:
       - "5000:5000"
     volumes:
       - ./osrm_data:/data
-    command: osrm-routed --algorithm mld /data/singapore-latest.osrm
+    command: osrm-routed --algorithm mld /data/malaysia-singapore-brunei-latest.osrm
 
   optimizer_api:
+    profiles: [ "debug" ]
     build: .
     container_name: optimizer_api
     restart: always
@@ -37,6 +38,7 @@ services:
       DB_NAME: ${DB_NAME:-optimizer_db}
       DB_USER: ${DB_USER:-optimizer_user}
       DB_PASSWORD: ${DB_PASSWORD:-optimizer_password}
+      OSRM_HOST: optimizer_osrm
     depends_on:
       - optimizer_db
       - optimizer_osrm
@@ -47,11 +49,12 @@ services:
       - ./logs:/app/logs
 
   optimizer_frontend:
+    profiles: [ "debug" ]
     image: nginx:alpine
     container_name: optimizer_frontend
     restart: always
     ports:
-      - "80:80"
+      - "8480:80"
     volumes:
       - ./frontend:/usr/share/nginx/html
       - ./nginx.conf:/etc/nginx/conf.d/default.conf

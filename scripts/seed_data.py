@@ -25,10 +25,12 @@ def seed_data():
             vtype, weight, vol = random.choice(vehicle_types)
             plate = f"SGP-{100 + i}Z"
             cur.execute(
-                "INSERT INTO vehicles (plate_number, type, capacity_weight, capacity_volume) VALUES (%s, %s, %s, %s) RETURNING id",
+                "INSERT INTO vehicles (plate_number, type, capacity_weight, capacity_volume) VALUES (%s, %s, %s, %s) ON CONFLICT (plate_number) DO NOTHING RETURNING id",
                 (plate, vtype, weight, vol)
             )
-            vehicle_ids.append(cur.fetchone()[0])
+            result = cur.fetchone()
+            if result:
+                vehicle_ids.append(result[0])
         print(f"Inserted {len(vehicle_ids)} vehicles.")
 
         # 2. Seed Drivers
@@ -53,7 +55,7 @@ def seed_data():
         center_lat, center_lng = 1.3521, 103.8198
         
         for i in range(50):
-            ext_id = f"ORD-{1000 + i}"
+            ext_id = f"ORD-{random.randint(2000, 99999)}"
             address = f"Blk {random.randint(1, 999)} Orchard Road, Singapore"
             # Random offset ~5-10km
             lat = center_lat + random.uniform(-0.08, 0.08)
@@ -68,7 +70,8 @@ def seed_data():
             cur.execute(
                 """INSERT INTO orders 
                    (external_order_id, customer_id, delivery_address, lat, lng, weight, volume, time_window_start, time_window_end, priority) 
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (external_order_id) DO NOTHING""",
                 (ext_id, f"CUST-{random.randint(100, 999)}", address, lat, lng, weight, volume, start_time, end_time, random.randint(1, 3))
             )
 

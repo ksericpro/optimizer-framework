@@ -12,3 +12,4 @@ python-socketio
 fastapi-socketio
 python-jose[cryptography]
 python-multipart
+bcrypt>=5.0.0

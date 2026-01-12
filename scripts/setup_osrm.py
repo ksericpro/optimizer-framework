@@ -4,8 +4,8 @@ import requests
 from api.logger_config import logger
 
 OSRM_DATA_DIR = os.path.abspath("osrm_data")
-OSM_FILE_URL = "https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf"
-OSM_FILE_NAME = "new-york-latest.osm.pbf"
+OSM_FILE_URL = "https://download.geofabrik.de/asia/malaysia-singapore-brunei-latest.osm.pbf"
+OSM_FILE_NAME = "malaysia-singapore-brunei-latest.osm.pbf"
 OSM_FILE_PATH = os.path.join(OSRM_DATA_DIR, OSM_FILE_NAME)
 
 def setup_osrm():

@@ -57,9 +57,6 @@ async def get_current_driver(token: str = Depends(oauth2_scheme)):
 
 app = FastAPI(title="Delivery Optimizer API")
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
-socket_app = socketio.ASGIApp(sio, app)
-# Backwards compatibility mount
-app.mount("/ws", socket_app)
 
 # Background Task for Risks
 async def check_delivery_risks():
@@ -71,8 +68,9 @@ async def check_delivery_risks():
             
             # 1. Check for Late Deliveries
             cur.execute("""
-                SELECT rs.id, rs.delivery_address, r.driver_id, d.full_name, rs.estimated_arrival_time
+                SELECT rs.id, o.delivery_address, r.driver_id, d.full_name, rs.estimated_arrival_time
                 FROM route_stops rs
+                JOIN orders o ON rs.order_id = o.id
                 JOIN routes r ON rs.route_id = r.id
                 JOIN drivers d ON r.driver_id = d.id
                 WHERE rs.status = 'ASSIGNED' 
@@ -121,7 +119,7 @@ async def startup_event():
 # Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
+    allow_origins=["http://localhost:8480"],  # Explicitly allow the frontend dev server
     allow_credentials=True,
     allow_methods=["*"],  # Allow all methods
     allow_headers=["*"],  # Allow all headers
@@ -612,3 +610,5 @@ async def get_daily_report():
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+app_with_sio = socketio.ASGIApp(sio, app, socketio_path='ws/socket.io')

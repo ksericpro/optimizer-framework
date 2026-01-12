@@ -1,4 +1,5 @@
 import requests
+import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -53,8 +54,8 @@ def create_data_model(orders, drivers):
     data['num_locations'] = len(locations)
     data['num_vehicles'] = len(drivers)
     data['depot'] = 0
-    data['vehicle_capacities_weight'] = drivers['capacity_weight'].tolist()
-    data['vehicle_capacities_volume'] = drivers['capacity_volume'].tolist()
+    data['vehicle_capacities_weight'] = [int(c) for c in drivers['capacity_weight'].tolist()]
+    data['vehicle_capacities_volume'] = [int(c) for c in drivers['capacity_volume'].tolist()]
     
     base_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
     
@@ -97,10 +98,11 @@ def get_osrm_matrix(locations):
     """
     # OSRM expects {lng},{lat}
     coords = ";".join([f"{lng},{lat}" for lat, lng in locations])
-    url = f"http://localhost:5000/table/v1/driving/{coords}?annotations=duration"
+    osrm_host = os.getenv("OSRM_HOST", "localhost")
+    url = f"http://{osrm_host}:5000/table/v1/driving/{coords}?annotations=duration"
     
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=30)
         data = response.json()
         if data['code'] != 'Ok':
             logger.error(f"OSRM Error: {data.get('message', 'Unknown error')}")
@@ -110,93 +112,97 @@ def get_osrm_matrix(locations):
         durations = data['durations']
         matrix = []
         for row in durations:
-            matrix.append([int(d / 60) for d in row])
+            matrix.append([int((d or 9999) / 60) for d in row])
         return matrix
     except Exception as e:
         logger.error(f"Failed to fetch OSRM matrix: {e}")
         return None
 
 def run_optimization():
-    orders, drivers = get_data_from_db()
-    if orders.empty:
-        logger.warning("No pending orders found for optimization.")
-        return {"status": "error", "message": "No pending orders found"}
+    import traceback
+    try:
+        orders, drivers = get_data_from_db()
+        if orders.empty:
+            logger.warning("No pending orders found for optimization.")
+            return {"status": "error", "message": "No pending orders found"}
 
-    logger.info(f"Starting optimization for {len(orders)} orders and {len(drivers)} drivers.")
+        logger.info(f"Starting optimization for {len(orders)} orders and {len(drivers)} drivers.")
 
-    data = create_data_model(orders, drivers)
-    manager = pywrapcp.RoutingIndexManager(data['num_locations'], data['num_vehicles'], data['depot'])
-    routing = pywrapcp.RoutingModel(manager)
+        data = create_data_model(orders, drivers)
+        manager = pywrapcp.RoutingIndexManager(data['num_locations'], data['num_vehicles'], data['depot'])
+        routing = pywrapcp.RoutingModel(manager)
 
-    def time_callback(from_index, to_index):
-        from_node = manager.IndexToNode(from_index)
-        to_node = manager.IndexToNode(to_index)
-        travel_time = data['time_matrix'][from_node][to_node]
-        if from_node == 0:
-            return travel_time
-        return travel_time + data['service_time']
+        def time_callback(from_index, to_index):
+            from_node = manager.IndexToNode(from_index)
+            to_node = manager.IndexToNode(to_index)
+            travel_time = data['time_matrix'][from_node][to_node]
+            if from_node == 0:
+                return int(travel_time)
+            return int(travel_time + data['service_time'])
 
-    transit_callback_index = routing.RegisterTransitCallback(time_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+        transit_callback_index = routing.RegisterTransitCallback(time_callback)
+        routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
-    time_dimension_name = 'Time'
-    routing.AddDimension(transit_callback_index, 1440, 1440, False, time_dimension_name)
-    time_dimension = routing.GetDimensionOrDie(time_dimension_name)
+        time_dimension_name = 'Time'
+        routing.AddDimension(transit_callback_index, 1440, 1440, False, time_dimension_name)
+        time_dimension = routing.GetDimensionOrDie(time_dimension_name)
 
-    for location_idx, time_window in enumerate(data['time_windows']):
-        if location_idx == 0: continue 
-        index = manager.NodeToIndex(location_idx)
-        time_dimension.CumulVar(index).SetRange(time_window[0], time_window[1])
+        for location_idx, time_window in enumerate(data['time_windows']):
+            if location_idx == 0: continue 
+            index = manager.NodeToIndex(location_idx)
+            time_dimension.CumulVar(index).SetRange(int(time_window[0]), int(time_window[1]))
 
-    # 1. Capacity Constraints (Weight)
-    def weight_callback(from_index):
-        node = manager.IndexToNode(from_index)
-        return int(data['demands_weight'][node])
-    
-    weight_callback_index = routing.RegisterUnaryTransitCallback(weight_callback)
-    routing.AddDimensionWithVehicleCapacity(
-        weight_callback_index, 0, data['vehicle_capacities_weight'], True, 'Weight'
-    )
-
-    # 2. Capacity Constraints (Volume)
-    def volume_callback(from_index):
-        node = manager.IndexToNode(from_index)
-        return int(data['demands_volume'][node])
-    
-    volume_callback_index = routing.RegisterUnaryTransitCallback(volume_callback)
-    routing.AddDimensionWithVehicleCapacity(
-        volume_callback_index, 0, data['vehicle_capacities_volume'], True, 'Volume'
-    )
-
-    # 3. Driver Breaks (30 mins at 12:00 PM = 240 mins from 8 AM start)
-    break_time = 30
-    solver = routing.solver()
-    for vehicle_id in range(data['num_vehicles']):
-        # Optional: Add break interval at midday
-        break_start = 240 # 12:00 PM
-        break_var = solver.FixedDurationIntervalVar(break_start, break_start, break_time, False, 'Break')
-        time_dimension.SetBreakIntervalsOfVehicle(
-            [break_var],
-            vehicle_id, []
+        # 1. Capacity Constraints (Weight)
+        def weight_callback(from_index):
+            node = manager.IndexToNode(from_index)
+            return int(data['demands_weight'][node])
+        
+        weight_callback_index = routing.RegisterUnaryTransitCallback(weight_callback)
+        routing.AddDimensionWithVehicleCapacity(
+            weight_callback_index, 0, data['vehicle_capacities_weight'], True, 'Weight'
         )
 
-    penalty = 10000
-    for node in range(1, data['num_locations']):
-        routing.AddDisjunction([manager.NodeToIndex(node)], penalty)
+        # 2. Capacity Constraints (Volume)
+        def volume_callback(from_index):
+            node = manager.IndexToNode(from_index)
+            return int(data['demands_volume'][node])
+        
+        volume_callback_index = routing.RegisterUnaryTransitCallback(volume_callback)
+        routing.AddDimensionWithVehicleCapacity(
+            volume_callback_index, 0, data['vehicle_capacities_volume'], True, 'Volume'
+        )
 
-    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-    search_parameters.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
-    search_parameters.local_search_metaheuristic = (
-        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
-    search_parameters.time_limit.seconds = 5
+        # 3. Driver Breaks (Disabled for verification)
+        # break_time = 30
+        # solver = routing.solver()
+        # for vehicle_id in range(data['num_vehicles']):
+        #     break_start = 240 # 12:00 PM
+        #     break_var = solver.FixedDurationIntervalVar(int(break_start), int(break_start), int(break_time), False, f'Break_{vehicle_id}')
+        #     time_dimension.SetBreakIntervalsOfVehicle(
+        #         [break_var],
+        #         int(vehicle_id), []
+        #     )
 
-    solution = routing.SolveWithParameters(search_parameters)
+        penalty = 10000
+        for node in range(1, data['num_locations']):
+            routing.AddDisjunction([int(manager.NodeToIndex(node))], int(penalty))
 
-    if solution:
-        return save_solution(data, manager, routing, solution, drivers, orders)
-    else:
-        return {"status": "error", "message": "No solution found"}
+        search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+        search_parameters.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
+        search_parameters.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
+        search_parameters.time_limit.seconds = 5
+
+        solution = routing.SolveWithParameters(search_parameters)
+
+        if solution:
+            return save_solution(data, manager, routing, solution, drivers, orders)
+        else:
+            return {"status": "error", "message": "No solution found"}
+    except Exception as e:
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
 
 def save_solution(data, manager, routing, solution, drivers, orders):
     time_dimension = routing.GetDimensionOrDie('Time')

@@ -4,7 +4,7 @@ import time
 import math
 from api.db_config import get_db_params
 
-API_BASE = "http://localhost:8000"
+API_BASE = "http://localhost:8011"
 
 def get_driver_tokens():
     params = get_db_params()
@@ -51,7 +51,7 @@ def get_routes():
         """, (r_id,))
         stops = cur.fetchall()
         
-        full_path = [(40.7128, -74.0060)] + [(s[0], s[1]) for s in stops]
+        full_path = [(1.3521, 103.8198)] + [(s[0], s[1]) for s in stops]
         route_data.append({
             "driver_id": str(d_id),
             "name": d_name,

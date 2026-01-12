@@ -1,4 +1,4 @@
-const API_BASE = '/api';
+const API_BASE = 'http://localhost:8011';
 let map, markers = [], driverMarkers = {}, polylines = [], pendingMarkers = [];
 let socket, isAddOrderMode = false;
 let currentRouteData = [];
@@ -17,7 +17,7 @@ async function init() {
 }
 
 function initSocket() {
-    socket = io(window.location.origin, {
+    socket = io(API_BASE, {
         path: '/ws/socket.io'
     });
 
@@ -183,7 +183,7 @@ async function visualizeRoutes() {
 
         allRoutes.forEach((route, i) => {
             if (route.stops && route.stops.length > 0) {
-                const routeCoords = [[40.7128, -74.0060]];
+                const routeCoords = [[1.3521, 103.8198]];
 
                 route.stops.forEach(stop => {
                     totalStops++;
@@ -222,14 +222,16 @@ async function visualizeRoutes() {
             }
         });
 
-        document.getElementById('active-routes-count').innerText = allRoutes.length;
+        const activeRoutesEl = document.getElementById('active-routes-count');
+        if (activeRoutesEl) activeRoutesEl.innerText = allRoutes.length;
     } catch (e) {
         console.error("Failed to load routes", e);
     }
 
-    document.getElementById('total-orders-count').innerText = totalStops;
+    const totalOrdersEl = document.getElementById('total-orders');
+    if (totalOrdersEl) totalOrdersEl.innerText = totalStops;
     const rate = totalStops > 0 ? Math.round((completedStops / totalStops) * 100) : 0;
-    const rateEl = document.querySelector('.stat-card:nth-child(3) .value');
+    const rateEl = document.getElementById('efficiency-score');
     if (rateEl) rateEl.innerText = `${rate}%`;
 }
 
@@ -358,7 +360,7 @@ function setupEventListeners() {
             try {
                 const res = await fetch(`${API_BASE}/optimize`, { method: 'POST' });
                 const data = await res.json();
-                updateActivityFeed('AI', `Optimization complete. Assigned ${data.optimizer.assigned_count || 0} orders.`);
+                updateActivityFeed('AI', `Optimization complete. Assigned ${data.optimizer.orders_assigned || 0} orders.`);
                 await loadInitialData();
             } catch (err) {
                 updateActivityFeed('ERROR', 'Optimization failed.');
