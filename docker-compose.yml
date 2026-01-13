@@ -50,14 +50,14 @@ services:
 
   optimizer_frontend:
     profiles: [ "debug" ]
-    image: nginx:alpine
+    build:
+      context: ./optimizer-ui
     container_name: optimizer_frontend
     restart: always
     ports:
-      - "8480:80"
-    volumes:
-      - ./frontend:/usr/share/nginx/html
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE=http://localhost:8000
     depends_on:
       - optimizer_api
     networks:

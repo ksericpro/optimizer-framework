@@ -43,12 +43,14 @@ def seed_data():
         for i, name in enumerate(driver_names):
             phone = f"+65 {random.randint(80000000, 99999999)}"
             max_jobs = random.randint(15, 35)
+            # Assign vehicle to driver (one-to-one)
+            vid = vehicle_ids[i] if i < len(vehicle_ids) else None
             cur.execute(
-                "INSERT INTO drivers (full_name, phone_number, max_jobs_per_day) VALUES (%s, %s, %s) RETURNING id",
-                (name, phone, max_jobs)
+                "INSERT INTO drivers (full_name, phone_number, max_jobs_per_day, assigned_vehicle_id) VALUES (%s, %s, %s, %s) RETURNING id",
+                (name, phone, max_jobs, vid)
             )
             driver_ids.append(cur.fetchone()[0])
-        print(f"Inserted {len(driver_ids)} drivers.")
+        print(f"Inserted {len(driver_ids)} drivers with assigned vehicles.")
 
         # 3. Seed Orders (around a central point, e.g., Singapore)
         # Center: 1.3521, 103.8198 (Singapore)
@@ -67,12 +69,15 @@ def seed_data():
             start_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0) + timedelta(hours=random.randint(0, 4))
             end_time = start_time + timedelta(hours=random.randint(2, 6))
             
+            person = f"{random.choice(['Mr.', 'Ms.', 'Mrs.'])} {random.choice(['Tan', 'Lee', 'Wong', 'Lim', 'Ng', 'Koh'])}"
+            mobile = f"{random.randint(80000000, 99999999)}"
+            
             cur.execute(
                 """INSERT INTO orders 
-                   (external_order_id, customer_id, delivery_address, lat, lng, weight, volume, time_window_start, time_window_end, priority) 
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   (external_order_id, customer_id, delivery_address, lat, lng, weight, volume, time_window_start, time_window_end, priority, contact_person, contact_mobile) 
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (external_order_id) DO NOTHING""",
-                (ext_id, f"CUST-{random.randint(100, 999)}", address, lat, lng, weight, volume, start_time, end_time, random.randint(1, 3))
+                (ext_id, f"CUST-{random.randint(100, 999)}", address, lat, lng, weight, volume, start_time, end_time, random.randint(1, 3), person, mobile)
             )
 
         conn.commit()

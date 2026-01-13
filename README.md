@@ -140,9 +140,11 @@ Build monitoring and reporting dashboard
 This proposal outlines a robust, scalable system that addresses your requirements while providing clear technical direction and business value.
 
 
-# Running
-## Power up Postgres
-docker compose up -d
+# Only Database and OSRM start
+docker compose up
+
+# Start everything
+docker compose --profile debug up
 
 ## Setup Seed Data
 uv run ./scripts/seed_data.py
@@ -151,7 +153,7 @@ uv run ./scripts/seed_data.py
 uv run ./scripts/verify_data.py
 
 ## Start API Server
-uv run uvicorn api.main:app --reload
+uv run uvicorn api.main:app_with_sio --reload
 
 ## dashboard
 http://localhost:8000/dashboard

@@ -1,0 +1,17 @@
+{
+    "api": {
+        "port": 8000,
+        "host": "0.0.0.0"
+    },
+    "rate_limits": {
+        "default": "200 per minute",
+        "login": "5 per minute",
+        "optimize": "2 per minute"
+    },
+    "logging": {
+        "level": "DEBUG",
+        "max_bytes": 5242880,
+        "backup_count": 10,
+        "file_name": "api.log"
+    }
+}

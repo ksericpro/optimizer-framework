@@ -1,4 +1,4 @@
-const API_BASE = 'http://localhost:8011';
+const API_BASE = 'http://localhost:8000';
 
 const loginScreen = document.getElementById('login-screen');
 const appContent = document.getElementById('driver-app-content');
@@ -121,7 +121,7 @@ loginForm.addEventListener('submit', async (e) => {
 
 function showApp(driverId) {
     loginScreen.style.display = 'none';
-    appContent.style.display = 'block';
+    appContent.style.display = 'flex';
 
     // Set a friendly name
     const usernames = { 'john': 'John Doe', 'jane': 'Jane Smith', 'bob': 'Bob Wilson' };
@@ -161,17 +161,28 @@ function renderStops(stops) {
 
     stopsList.innerHTML = '';
     stops.forEach(stop => {
-        const isDelivered = stop.stop_status === 'DELIVERED';
+        const status = stop.stop_status;
+        const isDone = status === 'DELIVERED' || status === 'FAILED' || status === 'CANCELLED';
+        const isFailed = status === 'FAILED';
+
         const card = document.createElement('div');
-        card.className = `stop-card ${isDelivered ? 'delivered' : ''}`;
+        card.className = `stop-card ${status.toLowerCase()}`;
         card.innerHTML = `
             <div class="stop-number">STOP # ${stop.sequence_number}</div>
             <div class="stop-address">${stop.delivery_address}</div>
             <div class="stop-meta">ETA: ${new Date(stop.estimated_arrival_time).toLocaleTimeString()}</div>
-            <button class="action-btn ${isDelivered ? 'done' : ''}" 
+            
+            <div class="contact-info">
+                <div>👤 <b>${stop.contact_person || 'No Contact Person'}</b></div>
+                <div>📱 <b>${stop.contact_mobile || 'No Mobile'}</b></div>
+            </div>
+
+            ${isFailed ? `<div style="color: var(--failed); font-size: 0.75rem; margin-top: 5px;">⚠️ Failed: ${stop.fail_reason || 'No reason provided'}</div>` : ''}
+
+            <button class="action-btn ${isDone ? 'done' : ''}" 
                     onclick="openPodModal('${stop.stop_id}')" 
-                    ${isDelivered ? 'disabled' : ''}>
-                ${isDelivered ? '✓ DELIVERED' : 'MARK AS DELIVERED'}
+                    ${isDone ? 'disabled' : ''}>
+                ${isDone ? `✓ ${status}` : 'MARK AS DELIVERED / FAIL'}
             </button>
         `;
         stopsList.appendChild(card);
@@ -248,6 +259,50 @@ async function savePod() {
     } finally {
         btn.disabled = false;
         btn.innerText = 'Complete Delivery';
+    }
+}
+
+function openFailModal() {
+    closePod();
+    document.getElementById('fail-modal').classList.add('active');
+    document.getElementById('fail-reason').value = '';
+}
+
+function closeFailModal() {
+    document.getElementById('fail-modal').classList.remove('active');
+}
+
+async function saveFailure() {
+    const btn = document.getElementById('submit-fail-btn');
+    const reason = document.getElementById('fail-reason').value;
+    const token = localStorage.getItem('token');
+
+    if (!reason) {
+        alert("Please provide a reason for the failure.");
+        return;
+    }
+
+    btn.disabled = true;
+    btn.innerText = 'Submitting...';
+
+    try {
+        const res = await fetch(`${API_BASE}/stops/${currentStopId}/status?status=FAILED&reason=${encodeURIComponent(reason)}`, {
+            method: 'PATCH',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (res.ok) {
+            closeFailModal();
+            loadDriverRoute(localStorage.getItem('driver_id'));
+        } else {
+            alert('Failed to update status.');
+        }
+    } catch (err) {
+        console.error(err);
+        alert('Network error while reporting failure.');
+    } finally {
+        btn.disabled = false;
+        btn.innerText = 'Submit Failure Report';
     }
 }
 

@@ -20,12 +20,59 @@ This guide provides step-by-step instructions to verify every major feature of t
     uv run python -m scripts.seed_data
     uv run python -m scripts.setup_auth
     ```
-4.  **Verify Accessibility**:
-    - Dashboard: Open `http://localhost:8480/` in your browser. (Map should center on Singapore).
-    - Driver App: Open `http://localhost:8480/driver` in your browser.
-    - API Health: Check `http://localhost:8480/api/` (should return "Delivery Optimizer API is running").
+3. Run the API server
+    
+    ```
+    uv run uvicorn api.main:app_with_sio --reload
+    ```
+
+5.  **Verify Accessibility**:
+    - Dashboard: Open `http://localhost:8000/dashboard/` in your browser. (Map should center on Singapore).
+    - Driver App: Open `http://localhost:8000/driver` in your browser.
+
+    Usernames: john, jane, or bob
+    Password: password123
+
+    - API Health: Check `http://localhost:8000/api/` (should return "Delivery Optimizer API is running").
+
+## Dashboard
+- Run the Optimizer: Click the "⚡ Run Optimizer" button in the top header. You should see the grey "Pending" dots turn into colored routes once the optimization finishes.
+
+
+6. **Simulate Drivers**: Open a new terminal and run:
+```
+- uv run python -m scripts.simulate_drivers
+```
+- the script simulates Real-time GPS movement for all drivers currently assigned to routes.
+
+- Specifically, it performs the following steps:
+
+- Authentication: It automatically logs in as each driver using their credentials (defaulting to password123) to obtain JWT security tokens.
+
+- Route Loading: It fetches today's optimized routes from the database for every driver.
+Path Interpolation: It calculates a path starting from a "Depot" point (central Singapore) and moving smoothly through each assigned stop in the correct sequence.
+Location Pulse (The Event): Every ~0.2 seconds, it sends a PATCH request to the API updating the driver's coordinates.
+
+- WebSocket Broadcast: The API catches these updates and broadcasts a location_update event via Socket.io.
+Dashboard Reaction: Your dashboard (on port 8000) listens for these events and moves the truck icons (🚚) on the map in real-time without you needing to refresh the page.
 
 ---
+## Fleet Management (Check-In / Out)
+1. **View Assignments**: Go to the **Fleet** view. You will now see that each driver has a **Tied Vehicle** assigned to them.
+2. **Clock In**: Click the **"Check In"** button for a driver. The status turns **ONLINE (Green)** and the dashboard acknowledges their assigned vehicle.
+3. **Clock Out**: Click **"Check Out"** to end the shift. The status turns **OFFLINE (Grey)**.
+
+**APIs**:
+*   `POST /drivers/<ID>/check-in`
+*   `POST /drivers/<ID>/check-out`
+
+curl -XPOST http://localhost:8000/drivers/SGP-102Z/check-in
+
+{"message":"Driver Charlie Lim checked in","online":true,"driver_id":"4075bff8-48aa-4a66-9988-2cecc15c79a5","vehicle":{"plate_number":"SGP-102Z","type":"BIKE"}}
+
+curl -XPOST http://localhost:8000/drivers/SGP-102Z/check-out
+{"message":"Checked out successfully","online":false}
+
 
 ## 2. Order Management (CRUD & Map)
 **Goal**: Verify that you can create and manage orders via the UI.

@@ -2,15 +2,21 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 import colorlog
+from api.config_loader import CONFIG
 
 def setup_logger(name):
-    # Create logs directory if it doesn't exist
-    log_dir = "logs"
+    # Requirement: Save logs in api/logs folder
+    api_dir = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(api_dir, "logs")
+    
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
+    log_settings = CONFIG.get("logging", {})
+    
     logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG)
+    level_str = log_settings.get("level", "DEBUG").upper()
+    logger.setLevel(getattr(logging, level_str))
 
     # Prevent double logging if logger is already configured
     if logger.hasHandlers():
@@ -32,11 +38,12 @@ def setup_logger(name):
     logger.addHandler(console_handler)
 
     # 2. Rotating File Handler
-    file_path = os.path.join(log_dir, "app.log")
+    file_name = log_settings.get("file_name", "api.log")
+    file_path = os.path.join(log_dir, file_name)
     file_handler = RotatingFileHandler(
         file_path, 
-        maxBytes=10*1024*1024, # 10MB
-        backupCount=5
+        maxBytes=log_settings.get("max_bytes", 5242880),
+        backupCount=log_settings.get("backup_count", 10)
     )
     file_formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -47,4 +54,4 @@ def setup_logger(name):
     return logger
 
 # Create a default logger instance
-logger = setup_logger("optimizer")
+logger = setup_logger("optimizer-api")

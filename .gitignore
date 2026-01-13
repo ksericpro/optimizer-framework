@@ -1,4 +1,5 @@
 logs/
+api/logs/
 venv/
 *.pyc
 .env

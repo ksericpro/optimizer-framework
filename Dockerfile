@@ -19,4 +19,4 @@ COPY . .
 RUN mkdir -p uploads
 
 # Expose port and start
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "api.main"]

@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Request
+from fastapi.responses import StreamingResponse, FileResponse
 import io
 import csv
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +10,7 @@ import asyncio
 from jose import JWTError, jwt
 import bcrypt
 import psycopg2
+from psycopg2 import errors
 import os
 import uuid
 from psycopg2.extras import RealDictCursor
@@ -19,6 +20,11 @@ from api.logger_config import logger
 from api.db_config import get_db_params
 from datetime import datetime, timedelta
 from typing import Optional
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from api.config_loader import CONFIG
 
 # Auth Configuration
 SECRET_KEY = "super-secret-key-change-this-in-prod"
@@ -29,6 +35,9 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 def verify_password(plain_password, hashed_password):
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+def get_password_hash(password):
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
@@ -56,6 +65,11 @@ async def get_current_driver(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
 
 app = FastAPI(title="Delivery Optimizer API")
+limiter = Limiter(key_func=get_remote_address, default_limits=[CONFIG["rate_limits"]["default"]])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 
 # Background Task for Risks
@@ -119,7 +133,7 @@ async def startup_event():
 # Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8480"],  # Explicitly allow the frontend dev server
+    allow_origins=["*"],  # Explicitly allow the frontend dev server
     allow_credentials=True,
     allow_methods=["*"],  # Allow all methods
     allow_headers=["*"],  # Allow all headers
@@ -131,11 +145,26 @@ def get_db_conn():
     return psycopg2.connect(**DB_PARAMS, cursor_factory=RealDictCursor)
 
 # Serve Frontend
-app.mount("/dashboard", StaticFiles(directory="frontend", html=True), name="frontend")
+@app.get("/driver")
+async def serve_driver():
+    return FileResponse("frontend/driver.html")
 
-@app.get("/")
-async def root():
-    return {"message": "Delivery Optimizer API is running"}
+@app.get("/dashboard")
+async def serve_dashboard():
+    return FileResponse("frontend/index.html")
+
+
+@app.get("/liveness")
+def liveness():
+    """
+    Define a liveness check endpoint.
+
+    This route is used to verify that the API is operational and responding to requests.
+
+    Returns:
+        A simple string message indicating the API is working.
+    """
+    return 'API Works!'
 
 @app.post("/admin/run-data-model")
 async def manual_data_model_trigger():
@@ -154,27 +183,285 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.post("/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+@limiter.limit(CONFIG["rate_limits"]["login"])
+async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute("SELECT id, password_hash FROM drivers WHERE username = %s", (form_data.username,))
     user = cur.fetchone()
-    cur.close()
-    conn.close()
-
+    
     if not user or not verify_password(form_data.password, user['password_hash']):
+        cur.close()
+        conn.close()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
+    # Update last_seen on login
+    cur.execute("UPDATE drivers SET last_seen = NOW() WHERE id = %s", (user['id'],))
+    conn.commit()
+    cur.close()
+    conn.close()
+    
     access_token = create_access_token(data={"sub": str(user['id'])})
     return {"access_token": access_token, "token_type": "bearer", "driver_id": user['id']}
 
+@app.post("/logout")
+async def logout(current_driver: str = Depends(get_current_driver)):
+    """Logs out a driver by clearing their last_seen status."""
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE drivers SET last_seen = NULL WHERE id = %s", (current_driver,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"message": "Logged out successfully"}
+
+@app.post("/drivers/{identifier}/check-in")
+async def driver_check_in(identifier: str):
+    """Marks a driver as starting their shift. Supports Driver UUID or Vehicle Plate Number."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        # 1. Try to find by Driver ID (UUID)
+        try:
+            uuid.UUID(identifier)
+            cur.execute("UPDATE drivers SET last_seen = NOW() WHERE id = %s RETURNING id, full_name, assigned_vehicle_id", (identifier,))
+        except (ValueError, errors.InvalidTextRepresentation):
+            # 2. Try to find by Vehicle Plate Number
+            cur.execute("""
+                UPDATE drivers 
+                SET last_seen = NOW() 
+                FROM vehicles v 
+                WHERE drivers.assigned_vehicle_id = v.id 
+                AND v.plate_number = %s 
+                RETURNING drivers.id, drivers.full_name, drivers.assigned_vehicle_id
+            """, (identifier,))
+        
+        row = cur.fetchone()
+        conn.commit()
+        
+        if not row:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail=f"Driver or Vehicle '{identifier}' not found or no driver assigned to this vehicle.")
+            
+        # Get vehicle details for response
+        vehicle_info = None
+        if row['assigned_vehicle_id']:
+            cur.execute("SELECT plate_number, type FROM vehicles WHERE id = %s", (row['assigned_vehicle_id'],))
+            vehicle_info = cur.fetchone()
+            
+        cur.close()
+        conn.close()
+
+        # Emit fleet update for dashboard
+        await sio.emit('fleet_update', {'driver_id': str(row['id']), 'status': 'ONLINE'})
+
+        return {
+            "message": f"Driver {row['full_name']} checked in",
+            "online": True,
+            "driver_id": row['id'],
+            "vehicle": vehicle_info
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/drivers/{identifier}/check-out")
+async def driver_check_out(identifier: str):
+    """Marks a driver as ending their shift. Supports Driver UUID or Vehicle Plate Number."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        target_driver_id = None
+
+        # 1. Try to find by Driver ID (UUID)
+        try:
+            uuid.UUID(identifier)
+            cur.execute("UPDATE drivers SET last_seen = NULL WHERE id = %s RETURNING id", (identifier,))
+            res = cur.fetchone()
+            if res:
+                target_driver_id = res['id']
+        except (ValueError, errors.InvalidTextRepresentation):
+            # 2. Try to find by Vehicle Plate Number
+            cur.execute("""
+                UPDATE drivers 
+                SET last_seen = NULL 
+                FROM vehicles v 
+                WHERE drivers.assigned_vehicle_id = v.id 
+                AND v.plate_number = %s
+                RETURNING drivers.id
+            """, (identifier,))
+            res = cur.fetchone()
+            if res:
+                target_driver_id = res['id']
+            
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        if target_driver_id:
+            await sio.emit('fleet_update', {'driver_id': str(target_driver_id), 'status': 'OFFLINE'})
+
+        return {"message": "Checked out successfully", "online": False}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/fleet")
+async def get_fleet():
+    """Fetches all vehicle and driver data, including assignments."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT d.id, d.full_name, d.contact_number, d.is_active, d.last_seen, v.plate_number as assigned_vehicle
+            FROM drivers d
+            LEFT JOIN vehicles v ON d.assigned_vehicle_id = v.id
+        """)
+        drivers = cur.fetchall()
+        
+        cur.execute("""
+            SELECT v.*, d.full_name as driver_name, d.last_seen as last_activity
+            FROM vehicles v
+            LEFT JOIN drivers d ON d.assigned_vehicle_id = v.id
+        """)
+        vehicles = cur.fetchall()
+        
+        cur.close()
+        conn.close()
+        return {"vehicles": vehicles, "drivers": drivers}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Vehicle CRUD ---
+@app.post("/vehicles")
+async def create_vehicle(plate_number: str, type: str, capacity_weight: float = 0, capacity_volume: float = 0):
+    """Creates a new vehicle."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO vehicles (plate_number, type, capacity_weight, capacity_volume) VALUES (%s, %s, %s, %s) RETURNING id",
+            (plate_number.upper(), type.upper(), capacity_weight, capacity_volume)
+        )
+        vid = cur.fetchone()['id']
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"id": vid, "message": "Vehicle created"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/vehicles/{vehicle_id}")
+async def update_vehicle(vehicle_id: str, plate_number: Optional[str] = None, type: Optional[str] = None, capacity_weight: Optional[float] = None):
+    """Updates vehicle details."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        updates, params = [], []
+        if plate_number:
+            updates.append("plate_number = %s")
+            params.append(plate_number.upper())
+        if type:
+            updates.append("type = %s")
+            params.append(type.upper())
+        if capacity_weight is not None:
+            updates.append("capacity_weight = %s")
+            params.append(capacity_weight)
+        
+        if updates:
+            params.append(vehicle_id)
+            cur.execute(f"UPDATE vehicles SET {', '.join(updates)} WHERE id = %s", params)
+            conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Vehicle updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/vehicles/{vehicle_id}")
+async def delete_vehicle(vehicle_id: str):
+    """Deletes a vehicle."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM vehicles WHERE id = %s", (vehicle_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Vehicle deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Driver CRUD ---
+@app.post("/drivers")
+async def create_driver(full_name: str, username: str, password: str, contact_number: Optional[str] = None, assigned_vehicle_id: Optional[str] = None):
+    """Creates a new driver profile."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        pwd_hash = get_password_hash(password)
+        cur.execute(
+            "INSERT INTO drivers (full_name, username, password_hash, contact_number, assigned_vehicle_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (full_name, username, pwd_hash, contact_number, assigned_vehicle_id if assigned_vehicle_id else None)
+        )
+        did = cur.fetchone()['id']
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"id": did, "message": "Driver created"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/drivers/{driver_id}")
+async def update_driver(driver_id: str, full_name: Optional[str] = None, contact_number: Optional[str] = None, assigned_vehicle_id: Optional[str] = "KEEP"):
+    """Updates driver details and vehicle assignment."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        updates, params = [], []
+        if full_name:
+            updates.append("full_name = %s")
+            params.append(full_name)
+        if contact_number:
+            updates.append("contact_number = %s")
+            params.append(contact_number)
+        if assigned_vehicle_id != "KEEP": 
+            updates.append("assigned_vehicle_id = %s")
+            params.append(assigned_vehicle_id if assigned_vehicle_id else None)
+        
+        if updates:
+            params.append(driver_id)
+            cur.execute(f"UPDATE drivers SET {', '.join(updates)} WHERE id = %s", params)
+            conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Driver updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/drivers/{driver_id}")
+async def delete_driver(driver_id: str):
+    """Deletes a driver profile."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM drivers WHERE id = %s", (driver_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Driver deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/optimize")
-async def trigger_optimization():
+@limiter.limit(CONFIG["rate_limits"]["optimize"])
+async def trigger_optimization(request: Request):
     """Triggers the daily route optimization process, preceded by the Data Model loop."""
     logger.info("Triggering full optimization cycle...")
     # 1. Run Data Model Loop to update driver parameters from history
@@ -215,14 +502,14 @@ async def get_orders(status: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/orders")
-async def create_order(delivery_address: str, lat: float, lng: float, priority: int = 1):
+async def create_order(delivery_address: str, lat: float, lng: float, contact_person: Optional[str] = None, contact_mobile: Optional[str] = None, priority: int = 1):
     """Creates a new delivery order."""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO orders (delivery_address, lat, lng, priority) VALUES (%s, %s, %s, %s) RETURNING id",
-            (delivery_address, lat, lng, priority)
+            "INSERT INTO orders (delivery_address, lat, lng, contact_person, contact_mobile, priority) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (delivery_address, lat, lng, contact_person, contact_mobile, priority)
         )
         order_id = cur.fetchone()['id']
         conn.commit()
@@ -233,7 +520,7 @@ async def create_order(delivery_address: str, lat: float, lng: float, priority: 
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/orders/{order_id}")
-async def update_order(order_id: str, delivery_address: Optional[str] = None, lat: Optional[float] = None, lng: Optional[float] = None, status: Optional[str] = None):
+async def update_order(order_id: str, delivery_address: Optional[str] = None, lat: Optional[float] = None, lng: Optional[float] = None, contact_person: Optional[str] = None, contact_mobile: Optional[str] = None, status: Optional[str] = None):
     """Updates an existing order's details or status."""
     try:
         conn = get_db_conn()
@@ -250,6 +537,12 @@ async def update_order(order_id: str, delivery_address: Optional[str] = None, la
         if lng:
             updates.append("lng = %s")
             params.append(lng)
+        if contact_person:
+            updates.append("contact_person = %s")
+            params.append(contact_person)
+        if contact_mobile:
+            updates.append("contact_mobile = %s")
+            params.append(contact_mobile)
         if status:
             updates.append("status = %s")
             params.append(status.upper())
@@ -355,7 +648,8 @@ async def get_driver_route(driver_id: str, current_driver: str = Depends(get_cur
         # Get all stops for that route
         cur.execute("""
             SELECT rs.id as stop_id, rs.sequence_number, rs.estimated_arrival_time, 
-                   rs.status as stop_status, o.delivery_address, o.lat, o.lng, o.priority
+                   rs.status as stop_status, rs.fail_reason,
+                   o.delivery_address, o.lat, o.lng, o.priority, o.contact_person, o.contact_mobile
             FROM route_stops rs
             JOIN orders o ON rs.order_id = o.id
             WHERE rs.route_id = %s
@@ -375,7 +669,7 @@ async def get_driver_route(driver_id: str, current_driver: str = Depends(get_cur
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/stops/{stop_id}/status")
-async def update_stop_status(stop_id: str, status: str, current_driver: str = Depends(get_current_driver)):
+async def update_stop_status(stop_id: str, status: str, reason: Optional[str] = None, current_driver: str = Depends(get_current_driver)):
     """Updates the status of a specific stop (e.g., set to 'DELIVERED')."""
     valid_statuses = ['ASSIGNED', 'PICKED_UP', 'DELIVERED', 'FAILED', 'CANCELLED']
     if status.upper() not in valid_statuses:
@@ -397,7 +691,10 @@ async def update_stop_status(stop_id: str, status: str, current_driver: str = De
         if not stop_owner or str(stop_owner['id']) != current_driver:
              raise HTTPException(status_code=403, detail="Not authorized to update this stop")
 
-        cur.execute("UPDATE route_stops SET status = %s WHERE id = %s", (status.upper(), stop_id))
+        if status.upper() == 'FAILED' and reason:
+            cur.execute("UPDATE route_stops SET status = %s, fail_reason = %s WHERE id = %s", (status.upper(), reason, stop_id))
+        else:
+            cur.execute("UPDATE route_stops SET status = %s WHERE id = %s", (status.upper(), stop_id))
         
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Stop not found")
@@ -476,7 +773,7 @@ async def update_driver_location(driver_id: str, lat: float, lng: float, current
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute(
-            "UPDATE drivers SET last_known_lat = %s, last_known_lng = %s WHERE id = %s",
+            "UPDATE drivers SET last_known_lat = %s, last_known_lng = %s, last_seen = NOW() WHERE id = %s",
             (lat, lng, driver_id)
         )
         if cur.rowcount == 0:
@@ -562,6 +859,7 @@ async def get_driver_analytics(driver_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/reports/daily")
 async def get_daily_report():
     """Generates a CSV report for today's deliveries."""
@@ -571,13 +869,14 @@ async def get_daily_report():
         cur.execute("""
             SELECT 
                 d.full_name as driver,
-                rs.delivery_address,
+                o.delivery_address,
                 rs.estimated_arrival_time,
                 rs.actual_arrival_time,
                 rs.status,
                 rs.pod_photo_url,
                 rs.feedback_notes
             FROM route_stops rs
+            JOIN orders o ON rs.order_id = o.id
             JOIN routes r ON rs.route_id = r.id
             JOIN drivers d ON r.driver_id = d.id
             WHERE r.planned_date = CURRENT_DATE
@@ -611,4 +910,13 @@ async def get_daily_report():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Root mount MUST come after all API routes so it doesn't swallow them
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+
 app_with_sio = socketio.ASGIApp(sio, app, socketio_path='ws/socket.io')
+
+if __name__ == "__main__":
+    import uvicorn
+    port = CONFIG.get("api", {}).get("port", 8000)
+    host = CONFIG.get("api", {}).get("host", "0.0.0.0")
+    uvicorn.run("api.main:app_with_sio", host=host, port=port, reload=True)

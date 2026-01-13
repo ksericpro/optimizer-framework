@@ -8,6 +8,8 @@ def update_schema_for_pod():
     
     try:
         print("Adding POD columns to route_stops...")
+        cur.execute("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP WITH TIME ZONE")
+        cur.execute("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS assigned_vehicle_id UUID REFERENCES vehicles(id)")
         cur.execute("ALTER TABLE route_stops ADD COLUMN IF NOT EXISTS pod_photo_url TEXT")
         cur.execute("ALTER TABLE route_stops ADD COLUMN IF NOT EXISTS pod_signature TEXT")
         conn.commit()

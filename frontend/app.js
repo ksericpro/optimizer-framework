@@ -1,6 +1,7 @@
-const API_BASE = 'http://localhost:8011';
+const API_BASE = 'http://localhost:8000';
 let map, markers = [], driverMarkers = {}, polylines = [], pendingMarkers = [];
 let socket, isAddOrderMode = false;
+let allVehicles = []; // Store for dropdowns
 let currentRouteData = [];
 let charts = {};
 
@@ -11,6 +12,7 @@ async function init() {
     setupEventListeners();
     setupTabs();
     setupNavigation();
+    initSearch();
 
     // Slow refresh for routes/orders (every 60s)
     setInterval(loadInitialData, 60000);
@@ -39,6 +41,11 @@ function initSocket() {
         console.warn('SYSTEM ALERT:', data);
         displayAlert(data);
         updateActivityFeed('ALERT', data.message);
+    });
+
+    socket.on('fleet_update', (data) => {
+        console.log('Fleet Update Received:', data);
+        fetchFleet(); // Trigger UI Refresh
     });
 }
 
@@ -396,6 +403,65 @@ function setupEventListeners() {
     document.getElementById('close-editor').onclick = closeOrderEditor;
     document.getElementById('save-order').onclick = saveOrder;
     document.getElementById('delete-order').onclick = deleteOrder;
+
+    initSearch();
+}
+
+function initSearch() {
+    const input = document.getElementById('edit-address');
+    const dropdown = document.getElementById('search-suggestions');
+    let timeout = null;
+
+    input.addEventListener('input', () => {
+        clearTimeout(timeout);
+        const query = input.value;
+        if (query.length < 2) {
+            dropdown.style.display = 'none';
+            return;
+        }
+
+        timeout = setTimeout(async () => {
+            try {
+                const res = await fetch(`https://www.onemap.gov.sg/api/common/elastic/search?searchVal=${encodeURIComponent(query)}&returnGeometries=Y&getAddrDetails=Y`);
+                const data = await res.json();
+
+                if (data.results && data.results.length > 0) {
+                    dropdown.innerHTML = '';
+                    data.results.slice(0, 5).forEach(res => {
+                        const item = document.createElement('div');
+                        item.className = 'suggestion-item';
+                        item.innerHTML = `
+                            <span class="postal">${res.POSTAL || 'N/A'}</span>
+                            <span class="addr">${res.ADDRESS}</span>
+                        `;
+                        item.onclick = () => {
+                            input.value = res.ADDRESS;
+                            document.getElementById('edit-lat').value = res.LATITUDE;
+                            document.getElementById('edit-lng').value = res.LONGITUDE;
+                            dropdown.style.display = 'none';
+
+                            // Move map and add temporary marker
+                            const latlng = [parseFloat(res.LATITUDE), parseFloat(res.LONGITUDE)];
+                            map.setView(latlng, 16);
+                        };
+                        dropdown.appendChild(item);
+                    });
+                    dropdown.style.display = 'block';
+                } else {
+                    dropdown.style.display = 'none';
+                }
+            } catch (e) {
+                console.error("Search failed", e);
+            }
+        }, 300);
+    });
+
+    // Close dropdown on click outside
+    document.addEventListener('click', (e) => {
+        if (!input.contains(e.target) && !dropdown.contains(e.target)) {
+            dropdown.style.display = 'none';
+        }
+    });
 }
 
 function setupTabs() {
@@ -413,6 +479,18 @@ function setupNavigation() {
         showView('analytics');
         fetchAnalytics();
     };
+    document.getElementById('nav-fleet').onclick = () => {
+        showView('fleet');
+        fetchFleet();
+    };
+    document.getElementById('nav-vehicles').onclick = () => {
+        showView('vehicles');
+        fetchFleet(); // Uses the same data source
+    };
+    document.getElementById('nav-drivers').onclick = () => {
+        showView('drivers');
+        fetchFleet();
+    };
 }
 
 function showView(viewId) {
@@ -423,6 +501,9 @@ function showView(viewId) {
     // Swap Views
     document.getElementById('dashboard-view').style.display = viewId === 'dashboard' ? 'block' : 'none';
     document.getElementById('analytics-view').style.display = viewId === 'analytics' ? 'block' : 'none';
+    document.getElementById('fleet-view').style.display = viewId === 'fleet' ? 'block' : 'none';
+    document.getElementById('vehicle-view').style.display = viewId === 'vehicles' ? 'block' : 'none';
+    document.getElementById('driver-manager-view').style.display = viewId === 'drivers' ? 'block' : 'none';
 }
 
 async function fetchAnalytics() {
@@ -499,8 +580,10 @@ function updateChart(id, label, labels, values, color) {
 function openOrderEditor(order) {
     document.getElementById('edit-order-id').value = order.id || '';
     document.getElementById('edit-address').value = order.delivery_address || '';
-    document.getElementById('edit-lat').value = order.lat;
-    document.getElementById('edit-lng').value = order.lng;
+    document.getElementById('edit-lat').value = order.lat || '';
+    document.getElementById('edit-lng').value = order.lng || '';
+    document.getElementById('edit-contact-person').value = order.contact_person || '';
+    document.getElementById('edit-contact-mobile').value = order.contact_mobile || '';
 
     document.getElementById('delete-order').style.display = order.id ? 'block' : 'none';
     document.getElementById('save-order').innerText = order.id ? 'Save Changes' : 'Create Order';
@@ -523,10 +606,14 @@ async function saveOrder() {
     const address = document.getElementById('edit-address').value;
     const lat = document.getElementById('edit-lat').value;
     const lng = document.getElementById('edit-lng').value;
+    const person = document.getElementById('edit-contact-person').value;
+    const mobile = document.getElementById('edit-contact-mobile').value;
+
+    const baseParams = `delivery_address=${encodeURIComponent(address)}&lat=${lat}&lng=${lng}&contact_person=${encodeURIComponent(person)}&contact_mobile=${encodeURIComponent(mobile)}`;
 
     const url = id
-        ? `${API_BASE}/orders/${id}?delivery_address=${encodeURIComponent(address)}&lat=${lat}&lng=${lng}`
-        : `${API_BASE}/orders?delivery_address=${encodeURIComponent(address)}&lat=${lat}&lng=${lng}`;
+        ? `${API_BASE}/orders/${id}?${baseParams}`
+        : `${API_BASE}/orders?${baseParams}`;
 
     const method = id ? 'PATCH' : 'POST';
 
@@ -563,9 +650,274 @@ async function deleteOrder() {
     }
 }
 
+async function fetchFleet() {
+    const fleetList = document.getElementById('fleet-list');
+    const vehicleList = document.getElementById('vehicle-list');
+    const driverList = document.getElementById('driver-manager-list');
+
+    if (!fleetList || !vehicleList || !driverList) {
+        console.error("Fleet UI elements missing from DOM");
+        return;
+    }
+
+    try {
+        console.log("Fetching fleet data...");
+        const res = await fetch(`${API_BASE}/fleet`);
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+
+        const data = await res.json();
+        console.log("Fleet data received:", data);
+
+        allVehicles = data.vehicles || [];
+        const drivers = data.drivers || [];
+
+        fleetList.innerHTML = '';
+        vehicleList.innerHTML = '';
+        driverList.innerHTML = '';
+
+        // 1. Render Management: Vehicles
+        allVehicles.forEach(v => {
+            try {
+                const lastSeenStr = v.last_activity ? formatDate(v.last_activity) : 'Never';
+                const card = document.createElement('div');
+                card.className = 'driver-mini-card';
+                card.style.cursor = 'pointer';
+                card.onclick = () => openVehicleEditor(v);
+                card.innerHTML = `
+                    <div class="driver-header">
+                        <div class="status-dot" style="background: ${v.last_activity ? 'var(--delivered)' : '#666'}"></div>
+                        <b>${v.plate_number}</b>
+                    </div>
+                    <div class="activity-content">
+                        <div>Type: ${v.type} | Cap: ${v.capacity_weight}kg</div>
+                        <div style="font-size: 0.7rem; color: #aaa; margin-top: 4px;">Last Activity: ${lastSeenStr}</div>
+                    </div>
+                `;
+                vehicleList.appendChild(card);
+            } catch (err) { console.error("Error rendering vehicle card", err, v); }
+        });
+
+        // 2. Render Management: Drivers
+        drivers.forEach(d => {
+            try {
+                const card = document.createElement('div');
+                card.className = 'driver-mini-card';
+                card.style.cursor = 'pointer';
+                card.onclick = () => openDriverEditor(d);
+                card.innerHTML = `
+                    <div class="driver-header">
+                        <div class="status-dot" style="background: ${d.is_active ? 'var(--delivered)' : 'var(--failed)'}"></div>
+                        <b>${d.full_name}</b>
+                    </div>
+                    <div class="activity-content">
+                        <div>Status: ${d.is_active ? 'Active' : 'Offline/Disabled'}</div>
+                        <div style="font-size: 0.75rem; color: #fff; margin: 2px 0;">📞 ${d.contact_number || 'No Contact Info'}</div>
+                        <div style="color: var(--accent-blue); font-size: 0.75rem;">Assigned: ${d.assigned_vehicle || 'NONE'}</div>
+                    </div>
+                `;
+                driverList.appendChild(card);
+            } catch (err) { console.error("Error rendering driver manager card", err, d); }
+        });
+
+        // 3. Render Fleet Overview (Assignments & Shifting)
+        drivers.forEach(d => {
+            try {
+                const isOnline = d.last_seen && (new Date() - new Date(d.last_seen)) < (5 * 60 * 1000);
+                const card = document.createElement('div');
+                card.className = 'driver-mini-card';
+                card.style.cursor = 'pointer';
+                card.onclick = (e) => {
+                    if (e.target.tagName !== 'BUTTON') openDriverEditor(d);
+                };
+                card.innerHTML = `
+                    <div class="driver-header" style="justify-content: space-between;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <div class="status-dot" style="background: ${isOnline ? 'var(--delivered)' : '#666'}; box-shadow: ${isOnline ? '0 0 8px var(--delivered)' : 'none'};"></div>
+                            <div>
+                                <b style="display: block;">${d.full_name}</b>
+                                <small style="color: var(--accent-blue);">${d.assigned_vehicle || 'No Vehicle'}</small>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 5px;">
+                            <button class="btn btn-primary" style="padding: 4px 8px; font-size: 0.6rem;" onclick="checkIn('${d.id}')">Start Shift</button>
+                            <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.6rem;" onclick="checkOut('${d.id}')">End Shift</button>
+                        </div>
+                    </div>
+                    <div class="activity-content" style="margin-top: 5px; display: flex; justify-content: space-between; align-items: center;">
+                        <div>Live Status: <b>${isOnline ? 'ONLINE' : 'OFFLINE'}</b></div>
+                        <div style="font-size: 0.75rem; color: #fff;">📞 ${d.contact_number || '-'}</div>
+                    </div>
+                `;
+                fleetList.appendChild(card);
+            } catch (err) { console.error("Error rendering fleet card", err, d); }
+        });
+
+    } catch (e) {
+        console.error("Critical failure in fetchFleet", e);
+    }
+}
+
+async function checkIn(driverId) {
+    try {
+        const res = await fetch(`${API_BASE}/drivers/${driverId}/check-in`, { method: 'POST' });
+        const data = await res.json();
+        console.log(data.message);
+        fetchFleet();
+    } catch (e) {
+        console.error("Failed to check-in", e);
+    }
+}
+
+async function checkOut(driverId) {
+    try {
+        await fetch(`${API_BASE}/drivers/${driverId}/check-out`, { method: 'POST' });
+        fetchFleet();
+    } catch (e) {
+        console.error("Failed to check-out", e);
+    }
+}
+
+// --- Vehicle Editor ---
+function openVehicleEditor(v = null) {
+    const overlay = document.getElementById('vehicle-editor');
+    const title = overlay.querySelector('h3');
+    if (v) {
+        title.innerText = 'Edit Vehicle';
+        document.getElementById('edit-vehicle-id').value = v.id;
+        document.getElementById('edit-plate').value = v.plate_number;
+        document.getElementById('edit-vtype').value = v.type;
+        document.getElementById('edit-vcap').value = v.capacity_weight;
+    } else {
+        title.innerText = 'Add Vehicle';
+        document.getElementById('edit-vehicle-id').value = '';
+        document.getElementById('edit-plate').value = '';
+        document.getElementById('edit-vtype').value = 'VAN';
+        document.getElementById('edit-vcap').value = '500';
+    }
+    overlay.classList.add('active');
+}
+
+function closeVehicleEditor() {
+    document.getElementById('vehicle-editor').classList.remove('active');
+}
+
+async function saveVehicle() {
+    const id = document.getElementById('edit-vehicle-id').value;
+    const plate = document.getElementById('edit-plate').value;
+    const vtype = document.getElementById('edit-vtype').value;
+    const cap = document.getElementById('edit-vcap').value;
+
+    const url = id ? `${API_BASE}/vehicles/${id}` : `${API_BASE}/vehicles?plate_number=${plate}&type=${vtype}&capacity_weight=${cap}`;
+    const method = id ? 'PATCH' : 'POST';
+
+    try {
+        const body = id ? JSON.stringify({ plate_number: plate, type: vtype, capacity_weight: parseFloat(cap) }) : null;
+        await fetch(url, {
+            method,
+            headers: id ? { 'Content-Type': 'application/json' } : {}
+        });
+        closeVehicleEditor();
+        fetchFleet();
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function deleteVehicle() {
+    const id = document.getElementById('edit-vehicle-id').value;
+    if (!id || !confirm('Delete this vehicle?')) return;
+    try {
+        await fetch(`${API_BASE}/vehicles/${id}`, { method: 'DELETE' });
+        closeVehicleEditor();
+        fetchFleet();
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+// --- Driver Editor ---
+function openDriverEditor(d = null) {
+    const overlay = document.getElementById('driver-editor');
+    const title = overlay.querySelector('h3');
+    const creds = document.getElementById('driver-creds');
+
+    // Fill Vehicle Dropdown
+    const select = document.getElementById('edit-dvehicle');
+    select.innerHTML = '<option value="">None</option>';
+    allVehicles.forEach(v => {
+        select.innerHTML += `<option value="${v.id}">${v.plate_number}</option>`;
+    });
+
+    if (d) {
+        title.innerText = 'Edit Driver';
+        document.getElementById('edit-driver-id').value = d.id;
+        document.getElementById('edit-dname').value = d.full_name;
+        document.getElementById('edit-dphone').value = d.contact_number || '';
+        document.getElementById('edit-dvehicle').value = allVehicles.find(v => v.plate_number === d.assigned_vehicle)?.id || '';
+        creds.style.display = 'none'; // Hide credentials for edit
+    } else {
+        title.innerText = 'Add Driver';
+        document.getElementById('edit-driver-id').value = '';
+        document.getElementById('edit-dname').value = '';
+        document.getElementById('edit-dphone').value = '';
+        document.getElementById('edit-duser').value = '';
+        document.getElementById('edit-dpwd').value = '';
+        document.getElementById('edit-dvehicle').value = '';
+        creds.style.display = 'block';
+    }
+    overlay.classList.add('active');
+}
+
+function closeDriverEditor() {
+    document.getElementById('driver-editor').classList.remove('active');
+}
+
+async function saveDriver() {
+    const id = document.getElementById('edit-driver-id').value;
+    const name = document.getElementById('edit-dname').value;
+    const phone = document.getElementById('edit-dphone').value;
+    const vid = document.getElementById('edit-dvehicle').value;
+
+    if (id) {
+        // Update
+        await fetch(`${API_BASE}/drivers/${id}?full_name=${encodeURIComponent(name)}&contact_number=${encodeURIComponent(phone)}&assigned_vehicle_id=${vid || ''}`, { method: 'PATCH' });
+    } else {
+        // Create
+        const user = document.getElementById('edit-duser').value;
+        const pwd = document.getElementById('edit-dpwd').value;
+        await fetch(`${API_BASE}/drivers?full_name=${encodeURIComponent(name)}&username=${user}&password=${pwd}&contact_number=${encodeURIComponent(phone)}&assigned_vehicle_id=${vid || ''}`, { method: 'POST' });
+    }
+    closeDriverEditor();
+    fetchFleet();
+}
+
+async function deleteDriver() {
+    const id = document.getElementById('edit-driver-id').value;
+    if (!id || !confirm('Delete this driver?')) return;
+    try {
+        await fetch(`${API_BASE}/drivers/${id}`, { method: 'DELETE' });
+        closeDriverEditor();
+        fetchFleet();
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+
 document.addEventListener('DOMContentLoaded', init);
 
 function viewSignature(dataUrl) {
     const win = window.open();
     win.document.write(`<img src="${dataUrl}" style="border:1px solid #ccc; background: white;">`);
+}
+
+function formatDate(dateStr) {
+    const date = new Date(dateStr);
+    return date.toLocaleString('en-SG', {
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
 }

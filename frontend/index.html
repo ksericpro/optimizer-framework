@@ -28,16 +28,19 @@
 
             <nav class="main-nav">
                 <div class="nav-item active" id="nav-dashboard">
-                    <span class="icon">📊</span> Dashboard
+                    <span class="icon">📍</span> Map & Orders
+                </div>
+                <div class="nav-item" id="nav-fleet">
+                    <span class="icon">🚚</span> Fleet (Assignments)
+                </div>
+                <div class="nav-item" id="nav-vehicles">
+                    <span class="icon">🚛</span> Vehicles
+                </div>
+                <div class="nav-item" id="nav-drivers">
+                    <span class="icon">👤</span> Drivers
                 </div>
                 <div class="nav-item" id="nav-analytics">
                     <span class="icon">📈</span> Analytics
-                </div>
-                <div class="nav-item">
-                    <span class="icon">🚚</span> Fleet
-                </div>
-                <div class="nav-item">
-                    <span class="icon">⚙️</span> Settings
                 </div>
             </nav>
 
@@ -142,6 +145,54 @@
                     </section>
                 </div>
             </div>
+
+            <!-- Fleet Management (Assignments) -->
+            <div id="fleet-view" style="display: none;">
+                <div class="analytics-grid">
+                    <section class="chart-container glass">
+                        <h3>Shift & Assignment Board</h3>
+                        <div id="fleet-list" class="scrollable" style="max-height: 600px; padding: 1rem;">
+                            <!-- Assignment cards injected here -->
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Vehicle Management -->
+            <div id="vehicle-view" style="display: none;">
+                <div class="analytics-grid">
+                    <section class="chart-container glass">
+                        <div
+                            style="display: flex; justify-content: space-between; align-items: center; padding: 0 1rem;">
+                            <h3>Managed Vehicles</h3>
+                            <button class="btn btn-primary" style="font-size: 0.8rem;" onclick="openVehicleEditor()">+
+                                New Vehicle</button>
+                        </div>
+                        <div id="vehicle-list" class="scrollable"
+                            style="max-height: 600px; padding: 1rem; display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                            <!-- Vehicle items injected here -->
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Driver Management -->
+            <div id="driver-manager-view" style="display: none;">
+                <div class="analytics-grid">
+                    <section class="chart-container glass">
+                        <div
+                            style="display: flex; justify-content: space-between; align-items: center; padding: 0 1rem;">
+                            <h3>Managed Drivers</h3>
+                            <button class="btn btn-primary" style="font-size: 0.8rem;" onclick="openDriverEditor()">+
+                                New Driver</button>
+                        </div>
+                        <div id="driver-manager-list" class="scrollable"
+                            style="max-height: 600px; padding: 1rem; display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                            <!-- Driver items injected here -->
+                        </div>
+                    </section>
+                </div>
+            </div>
         </main>
     </div>
 
@@ -155,9 +206,20 @@
         </div>
         <div class="editor-body">
             <input type="hidden" id="edit-order-id">
-            <div class="form-group">
-                <label>Address</label>
-                <input type="text" id="edit-address" placeholder="Enter delivery address">
+            <div class="form-group" style="position: relative;">
+                <label>Address / Postal Code</label>
+                <input type="text" id="edit-address" placeholder="Enter address or 6-digit postal" autocomplete="off">
+                <div id="search-suggestions" class="suggestions-dropdown glass"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Contact Person</label>
+                    <input type="text" id="edit-contact-person" placeholder="e.g. Mrs. Lee">
+                </div>
+                <div class="form-group">
+                    <label>Contact Mobile</label>
+                    <input type="text" id="edit-contact-mobile" placeholder="e.g. 91234567">
+                </div>
             </div>
             <div class="form-row">
                 <div class="form-group">
@@ -172,6 +234,72 @@
             <div class="form-actions">
                 <button id="save-order" class="btn btn-primary">Save Changes</button>
                 <button id="delete-order" class="btn btn-danger">Delete Order</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Vehicle Editor -->
+    <div id="vehicle-editor" class="editor-overlay glass">
+        <div class="editor-header">
+            <h3>Vehicle Details</h3>
+            <button class="close-btn" onclick="closeVehicleEditor()">&times;</button>
+        </div>
+        <div class="editor-body">
+            <input type="hidden" id="edit-vehicle-id">
+            <div class="form-group">
+                <label>Plate Number</label>
+                <input type="text" id="edit-plate" placeholder="SGP-XXXXZ">
+            </div>
+            <div class="form-group">
+                <label>Type</label>
+                <select id="edit-vtype">
+                    <option value="VAN">VAN</option>
+                    <option value="TRUCK">TRUCK</option>
+                    <option value="BIKE">BIKE</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Capacity (kg)</label>
+                <input type="number" id="edit-vcap" value="500">
+            </div>
+            <div class="form-actions">
+                <button onclick="saveVehicle()" class="btn btn-primary">Save Vehicle</button>
+                <button onclick="deleteVehicle()" class="btn btn-danger">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Driver Editor -->
+    <div id="driver-editor" class="editor-overlay glass">
+        <div class="editor-header">
+            <h3>Driver Details</h3>
+            <button class="close-btn" onclick="closeDriverEditor()">&times;</button>
+        </div>
+        <div class="editor-body">
+            <input type="hidden" id="edit-driver-id">
+            <div class="form-group">
+                <label>Full Name</label>
+                <input type="text" id="edit-dname">
+            </div>
+            <div class="form-group">
+                <label>Contact Number</label>
+                <input type="text" id="edit-dphone" placeholder="+65 XXXX XXXX">
+            </div>
+            <div class="form-group" id="driver-creds">
+                <label>Username</label>
+                <input type="text" id="edit-duser">
+                <label>Password</label>
+                <input type="password" id="edit-dpwd">
+            </div>
+            <div class="form-group">
+                <label>Assigned Vehicle</label>
+                <select id="edit-dvehicle">
+                    <option value="">None</option>
+                </select>
+            </div>
+            <div class="form-actions">
+                <button onclick="saveDriver()" class="btn btn-primary">Save Driver</button>
+                <button onclick="deleteDriver()" class="btn btn-danger">Delete</button>
             </div>
         </div>
     </div>
