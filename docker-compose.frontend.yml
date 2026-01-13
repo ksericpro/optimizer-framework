@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # Nginx Gateway - serves as reverse proxy for everything
+  optimizer_gateway:
+    image: nginx:alpine
+    container_name: optimizer_gateway
+    restart: always
+    ports:
+      - "${GATEWAY_PORT:-80}:80"
+    volumes:
+      # Nginx configuration
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Driver app static files (if you have them)
+      - ./driver:/usr/share/nginx/html:ro
+    networks:
+      - optimizer_network
+    depends_on:
+      - optimizer_frontend
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "com.optimizer.service=gateway"
+      - "com.optimizer.description=Nginx Gateway - Routes to Dashboard, Driver App, API & WebSocket"
+
+  # Next.js Frontend (runs behind nginx)
+  optimizer_frontend:
+    build:
+      context: ./optimizer-ui
+      dockerfile: Dockerfile
+    container_name: optimizer_frontend
+    restart: always
+    environment:
+      # API calls go through nginx, so use relative paths
+      - NEXT_PUBLIC_API_BASE=/api
+      - NODE_ENV=production
+    networks:
+      - optimizer_network
+    labels:
+      - "com.optimizer.service=frontend"
+      - "com.optimizer.description=Next.js Dashboard Application"
+
+networks:
+  optimizer_network:
+    name: optimizer_network
+    external: true
