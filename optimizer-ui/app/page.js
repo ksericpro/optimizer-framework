@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { io } from 'socket.io-client';
-import { Download, Plus, Zap, AlertTriangle, X, Info, Minus, Maximize2, GripHorizontal, Edit, Trash2 } from 'lucide-react';
+import { Download, Plus, Zap, AlertTriangle, X, Info, Minus, Maximize2, GripHorizontal, Edit, Trash2, RefreshCcw, Calendar, Home } from 'lucide-react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -55,6 +55,16 @@ export default function Dashboard() {
   const [showDriverDeleteConfirm, setShowDriverDeleteConfirm] = useState(false);
   const [driverToDelete, setDriverToDelete] = useState(null);
   const [analyticsData, setAnalyticsData] = useState([]);
+  const [showClearRoutesConfirm, setShowClearRoutesConfirm] = useState(false);
+  const [showDeleteAllPendingConfirm, setShowDeleteAllPendingConfirm] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [periods, setPeriods] = useState([]);
+  const [currentPeriod, setCurrentPeriod] = useState(null);
+  const [showPeriodManager, setShowPeriodManager] = useState(false);
+  const [editingPeriod, setEditingPeriod] = useState(null);
+  const [periodAssignments, setPeriodAssignments] = useState([]);
+  const [warehouse, setWarehouse] = useState(null);
+  const [showWarehouseEditor, setShowWarehouseEditor] = useState(false);
 
   // const [toasts, setToasts] = useState([]); // Removed per user request
   const [panelMinimized, setPanelMinimized] = useState(false);
@@ -125,15 +135,40 @@ export default function Dashboard() {
   }, []);
 
   const fetchData = useCallback(async () => {
-    console.log('🔄 Fetching data from:', API_BASE);
     try {
-      const routesRes = await fetch(`${API_BASE}/routes/today`);
+      // 1. Fetch Routes (Single Date or Range/Period)
+      let routesUrl = `${API_BASE}/routes`;
+      if (currentPeriod) {
+        routesUrl += `?start_date=${currentPeriod.start_date}&end_date=${currentPeriod.end_date}`;
+      } else {
+        routesUrl += `?date=${selectedDate}`;
+      }
+
+      const routesRes = await fetch(routesUrl);
       if (routesRes.ok) {
         const routesData = await routesRes.json();
-        console.log('📍 Routes fetched:', routesData.length, 'routes', routesData);
         setRoutes(routesData);
+      }
+
+      // 2. Fetch Periods
+      const periodsRes = await fetch(`${API_BASE}/periods`);
+      if (periodsRes.ok) {
+        const pData = await periodsRes.json();
+        console.log('📅 Periods fetched:', pData);
+        setPeriods(pData);
       } else {
-        console.warn('⚠️ Routes fetch failed:', routesRes.status);
+        console.error('Failed to fetch periods:', periodsRes.status);
+      }
+
+      // 3. Fetch current period assignments if applicable
+      if (currentPeriod) {
+        const assignRes = await fetch(`${API_BASE}/periods/${currentPeriod.id}/assignments`);
+        if (assignRes.ok) {
+          const aData = await assignRes.json();
+          setPeriodAssignments(aData);
+        }
+      } else {
+        setPeriodAssignments([]);
       }
 
       const ordersRes = await fetch(`${API_BASE}/orders?status=PENDING`);
@@ -149,8 +184,17 @@ export default function Dashboard() {
       if (fleetRes.ok) {
         const data = await fleetRes.json();
         console.log('🚚 Fleet fetched:', data);
-        setDrivers(data.drivers || []);
-        setVehicles(data.vehicles || []);
+
+        // Deduplicate data to prevent React key errors
+        const uniqueDrivers = (data.drivers || []).filter((obj, pos, arr) => {
+          return arr.map(mapObj => mapObj.id).indexOf(obj.id) === pos;
+        });
+        const uniqueVehicles = (data.vehicles || []).filter((obj, pos, arr) => {
+          return arr.map(mapObj => mapObj.id).indexOf(obj.id) === pos;
+        });
+
+        setDrivers(uniqueDrivers);
+        setVehicles(uniqueVehicles);
 
         const locs = {};
         (data.drivers || []).forEach(d => {
@@ -163,6 +207,13 @@ export default function Dashboard() {
         console.warn('⚠️ Fleet fetch failed:', fleetRes.status);
       }
 
+      // Fetch default warehouse
+      const warehouseRes = await fetch(`${API_BASE}/warehouse/default`);
+      if (warehouseRes.ok) {
+        const wData = await warehouseRes.json();
+        setWarehouse(wData);
+      }
+
       const analyticsRes = await fetch(`${API_BASE}/analytics/summary`);
       if (analyticsRes.ok) {
         const analytics = await analyticsRes.json();
@@ -172,7 +223,7 @@ export default function Dashboard() {
       console.error('❌ API Error:', err);
       addActivity('ERROR', 'Failed to connect to API.', 'ALERT');
     }
-  }, [addActivity]);
+  }, [addActivity, selectedDate, currentPeriod]);
 
   useEffect(() => {
     fetchData();
@@ -212,11 +263,12 @@ export default function Dashboard() {
 
   const handleOptimize = async () => {
     setIsOptimizing(true);
-    addActivity('USER', 'Starting optimization cycle...');
+    const targetDate = currentPeriod ? currentPeriod.start_date : selectedDate;
+    addActivity('USER', `Starting optimization cycle for ${targetDate}...`);
     try {
-      const res = await fetch(`${API_BASE}/optimize`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/optimize?date=${targetDate}`, { method: 'POST' });
       const data = await res.json();
-      addActivity('AI', `Optimization complete. Assigned ${data.optimizer?.orders_assigned || 0} orders.`);
+      addActivity('AI', `Optimization complete for ${targetDate}. Assigned ${data.optimizer?.orders_assigned || 0} orders.`);
       await fetchData();
     } catch (err) {
       addActivity('ERROR', 'Optimization failed.');
@@ -225,16 +277,53 @@ export default function Dashboard() {
     }
   };
 
+  const handleClearRoutes = () => {
+    setShowClearRoutesConfirm(true);
+  };
+
+  const confirmClearRoutes = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/routes?date=${selectedDate}`, { method: 'DELETE' });
+      const data = await res.json();
+      addActivity('SYSTEM', `Routes for ${selectedDate} cleared and orders reset.`);
+      setShowClearRoutesConfirm(false);
+      await fetchData();
+    } catch (err) {
+      addActivity('ERROR', 'Failed to clear routes.');
+    }
+  };
+
+  const handleDeleteAllPending = () => {
+    console.log('🗑️ Delete All Pending clicked');
+    setShowDeleteAllPendingConfirm(true);
+  };
+
+  const confirmDeleteAllPending = async () => {
+    console.log('Confirming delete all pending...');
+    try {
+      const res = await fetch(`${API_BASE}/orders/pending`, { method: 'DELETE' });
+      console.log('Delete response status:', res.status);
+      const data = await res.json();
+      console.log('Delete response data:', data);
+      addActivity('SYSTEM', data.message || 'Pending orders deleted.');
+      setShowDeleteAllPendingConfirm(false);
+      await fetchData();
+    } catch (err) {
+      console.error('Error deleting pending orders:', err);
+      addActivity('ERROR', 'Failed to delete pending orders.');
+    }
+  };
+
   const handleDownloadReport = async () => {
     try {
-      const res = await fetch(`${API_BASE}/reports/daily`);
+      const res = await fetch(`${API_BASE}/reports/daily?date=${selectedDate}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `daily_report_${new Date().toISOString().split('T')[0]}.csv`;
+      a.download = `report_${selectedDate}.csv`;
       a.click();
-      addActivity('SYSTEM', 'Report downloaded successfully.');
+      addActivity('SYSTEM', `Report for ${selectedDate} downloaded successfully.`);
     } catch (err) {
       addActivity('ERROR', 'Failed to download report.');
     }
@@ -258,6 +347,146 @@ export default function Dashboard() {
   const openDriverEditor = (driver) => {
     setEditingDriver(driver);
     setShowDriverEditor(true);
+  };
+
+  const openPeriodEditor = (period) => {
+    setEditingPeriod(period);
+    setShowPeriodManager(true);
+  };
+
+  const handleSavePeriod = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const pData = Object.fromEntries(formData.entries());
+
+    try {
+      const url = editingPeriod ? `${API_BASE}/periods/${editingPeriod.id}` : `${API_BASE}/periods`;
+      const method = editingPeriod ? 'PATCH' : 'POST';
+      const params = new URLSearchParams();
+      params.append('name', pData.name);
+      params.append('start_date', pData.start_date);
+      params.append('end_date', pData.end_date);
+
+      console.log('Saving period:', { url, method, params: params.toString() });
+      const res = await fetch(`${url}?${params.toString()}`, { method });
+
+      console.log('Save response status:', res.status);
+      const responseData = await res.json();
+      console.log('Save response data:', responseData);
+
+      if (!res.ok) {
+        console.error('Period save failed:', responseData);
+        throw new Error('Failed to save period');
+      }
+
+      console.log('✅ Period saved successfully!');
+      addActivity('SYSTEM', `Period ${editingPeriod ? 'updated' : 'created'} successfully.`);
+      setEditingPeriod(null);
+      setShowPeriodManager(false);
+      await fetchData();
+    } catch (err) {
+      console.error('Error saving period:', err);
+      addActivity('ERROR', `Failed to save period: ${err.message}`);
+    }
+  };
+
+  const handleDeletePeriod = async (id) => {
+    if (!confirm('Are you sure you want to delete this period? This will also remove all driver assignments for this period.')) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/periods/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        addActivity('SYSTEM', 'Period deleted successfully.');
+        // If we're currently viewing the deleted period, switch to daily view
+        if (currentPeriod?.id === id) {
+          setCurrentPeriod(null);
+        }
+        await fetchData();
+      } else {
+        throw new Error('Failed to delete period');
+      }
+    } catch (err) {
+      console.error('Error deleting period:', err);
+      addActivity('ERROR', 'Failed to delete period.');
+    }
+  };
+  const toggleDriverPeriodAssignment = async (driverId) => {
+    // We can assign to either the period we are currently editing in the manager, or the active page period
+    const periodId = editingPeriod?.id || currentPeriod?.id;
+    if (!periodId) return;
+
+    const isAssigned = periodAssignments.includes(driverId);
+    const method = isAssigned ? 'DELETE' : 'POST';
+    const url = `${API_BASE}/periods/${periodId}/drivers/${driverId}`;
+
+    try {
+      const res = await fetch(url, { method });
+      if (res.ok) {
+        setPeriodAssignments(prev =>
+          isAssigned ? prev.filter(id => id !== driverId) : [...prev, driverId]
+        );
+        addActivity('SYSTEM', `Driver ${isAssigned ? 'removed' : 'added'} to roster.`);
+      }
+    } catch (err) {
+      addActivity('ERROR', 'Failed to update roster.');
+    }
+  };
+
+  const renderDriverCard = (d, isRostered) => {
+    const isOnline = d.last_seen && (new Date() - new Date(d.last_seen)) < (5 * 60 * 1000);
+    const vehicle = vehicles.find(v => v.plate_number === d.assigned_vehicle);
+
+    return (
+      <div
+        key={d.id}
+        className="driver-mini-card glass"
+        style={{
+          cursor: 'pointer',
+          borderLeft: isOnline ? '4px solid var(--delivered)' : '4px solid transparent',
+          opacity: (currentPeriod && !isRostered) ? 0.7 : 1,
+          transition: 'all 0.3s ease'
+        }}
+        onClick={() => openDriverEditor(d)}
+      >
+        <div className="driver-header" style={{ justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div className="status-dot" style={{ background: isOnline ? 'var(--delivered)' : '#666', boxShadow: isOnline ? '0 0 8px var(--delivered)' : 'none' }}></div>
+            <div>
+              <b style={{ display: 'block' }}>{d.full_name}</b>
+              <small style={{ color: 'var(--accent-blue)' }}>{d.assigned_vehicle} ({vehicle?.type || 'No Vehicle'})</small>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '5px' }}>
+            {currentPeriod ? (
+              <button
+                className={`btn ${isRostered ? 'btn-secondary' : 'btn-primary'}`}
+                style={{ padding: '6px 12px', fontSize: '0.65rem' }}
+                onClick={(e) => { e.stopPropagation(); toggleDriverPeriodAssignment(d.id); }}
+              >
+                {isRostered ? 'Remove' : 'Assign'}
+              </button>
+            ) : (
+              <>
+                <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '0.65rem' }} onClick={(e) => { e.stopPropagation(); checkIn(d.id); }}>Start</button>
+                <button className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '0.65rem' }} onClick={(e) => { e.stopPropagation(); checkOut(d.id); }}>End</button>
+              </>
+            )}
+          </div>
+        </div>
+        <div className="activity-content" style={{ marginTop: '10px', padding: '8px', background: 'rgba(255,255,255,0.05)', borderRadius: '6px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: '4px' }}>
+            <span>Capacity: <b>{vehicle?.capacity_weight || 0}kg</b></span>
+            <span>Status: <b style={{ color: isOnline ? 'var(--delivered)' : 'inherit' }}>{isOnline ? 'ONLINE' : 'OFFLINE'}</b></span>
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>📞 {d.contact_number || 'N/A'}</span>
+            {currentPeriod && isRostered && <span style={{ color: 'var(--delivered)', fontSize: '0.65rem', fontWeight: 'bold' }}>ROSTERED</span>}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const handleSaveOrder = async (e) => {
@@ -346,6 +575,7 @@ export default function Dashboard() {
       if (vehicleData.plate_number) params.append('plate_number', vehicleData.plate_number);
       if (vehicleData.type) params.append('type', vehicleData.type);
       if (vehicleData.capacity_weight) params.append('capacity_weight', vehicleData.capacity_weight);
+      params.append('is_active', e.target.is_active.checked);
 
       const fetchUrl = `${url}?${params.toString()}`;
 
@@ -438,6 +668,41 @@ export default function Dashboard() {
     }
   };
 
+  const handleSaveWarehouse = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const wData = Object.fromEntries(formData.entries());
+
+    try {
+      const url = warehouse ? `${API_BASE}/warehouse/${warehouse.id}` : `${API_BASE}/warehouse`;
+      const method = warehouse ? 'PATCH' : 'POST';
+
+      const body = JSON.stringify({
+        ...wData,
+        lat: parseFloat(wData.lat),
+        lng: parseFloat(wData.lng),
+        is_default: true
+      });
+
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to save warehouse');
+      }
+
+      addActivity('SYSTEM', 'Warehouse location updated.');
+      setShowWarehouseEditor(false);
+      await fetchData();
+    } catch (err) {
+      console.error('Error saving warehouse:', err);
+      addActivity('ERROR', 'Failed to save warehouse location.');
+    }
+  };
+
   const checkIn = async (driverId) => {
     try {
       await fetch(`${API_BASE}/drivers/${driverId}/check-in`, { method: 'POST' });
@@ -482,21 +747,38 @@ export default function Dashboard() {
         </nav>
 
         <div className="driver-stats-container">
-          <h3>Active Drivers</h3>
+          <h3>Active Drivers Online</h3>
           <div className="scrollable" style={{ flex: 1 }}>
-            {drivers.map(driver => (
-              <div
-                key={driver.id}
-                onClick={() => showDriverSchedule(driver)}
-                className={`driver-mini-card ${selectedDriver?.id === driver.id ? 'active' : ''}`}
-              >
-                <div className="driver-header">
-                  <div className="status-dot"></div>
-                  <span>{driver.full_name}</span>
+            {(() => {
+              const onlineDrivers = drivers.filter(d => d.last_seen && (new Date() - new Date(d.last_seen)) < (5 * 60 * 1000));
+
+              if (onlineDrivers.length === 0) {
+                return (
+                  <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-dim)', fontSize: '0.8rem' }}>
+                    No drivers currently online
+                  </div>
+                );
+              }
+
+              return onlineDrivers.map(driver => (
+                <div
+                  key={driver.id}
+                  onClick={() => showDriverSchedule(driver)}
+                  className={`driver-mini-card ${selectedDriver?.id === driver.id ? 'active' : ''}`}
+                >
+                  <div className="driver-header">
+                    <div className="status-dot" style={{
+                      background: 'var(--delivered)',
+                      boxShadow: '0 0 8px var(--delivered)'
+                    }}></div>
+                    <span style={{ color: 'white' }}>{driver.full_name}</span>
+                  </div>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
+                    Live Tracking Active
+                  </div>
                 </div>
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>Live Tracking Active</div>
-              </div>
-            ))}
+              ));
+            })()}
           </div>
         </div>
       </aside >
@@ -514,6 +796,7 @@ export default function Dashboard() {
                 driverLocations={driverLocations}
                 onOrderClick={openOrderEditor}
                 focusedLocation={focusedLocation}
+                warehouse={warehouse}
               />
               <div className="map-overlay">
                 <div className="map-legend glass">
@@ -533,11 +816,93 @@ export default function Dashboard() {
               </div>
 
               <div className="actions">
+                <div className="period-switcher glass" style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  marginRight: '16px',
+                  padding: '4px 12px',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  background: 'rgba(255,255,255,0.05)'
+                }}>
+                  <Calendar size={14} color="var(--accent-blue)" />
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ fontSize: '0.6rem', color: 'var(--text-dim)', fontWeight: 'bold', textTransform: 'uppercase' }}>Current Period</span>
+                    <select
+                      value={currentPeriod?.id || 'daily'}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === 'daily') setCurrentPeriod(null);
+                        else setCurrentPeriod(periods.find(p => p.id === val));
+                      }}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'white',
+                        fontSize: '0.8rem',
+                        outline: 'none',
+                        cursor: 'pointer',
+                        padding: '0'
+                      }}
+                    >
+                      <option value="daily" style={{ background: '#1a1d29' }}>Daily Focus ({selectedDate})</option>
+                      {(() => {
+                        console.log('Rendering periods dropdown, periods:', periods);
+                        return periods.map(p => (
+                          <option key={p.id} value={p.id} style={{ background: '#1a1d29' }}>{p.name}</option>
+                        ));
+                      })()}
+                    </select>
+                  </div>
+                  {currentPeriod ? (
+                    <div
+                      onClick={() => setCurrentPeriod(null)}
+                      style={{ cursor: 'pointer', color: 'var(--failed)', fontSize: '0.9rem', padding: '4px' }}
+                      title="Clear Period"
+                    >
+                      <X size={14} />
+                    </div>
+                  ) : (
+                    <input
+                      type="date"
+                      value={selectedDate}
+                      onChange={(e) => setSelectedDate(e.target.value)}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'white',
+                        fontSize: '0.8rem',
+                        outline: 'none',
+                        cursor: 'pointer',
+                        width: '110px'
+                      }}
+                    />
+                  )}
+                  <button
+                    onClick={() => setShowPeriodManager(true)}
+                    className="icon-btn"
+                    style={{ marginLeft: '4px', opacity: 0.7 }}
+                    title="Manage Periods"
+                  >
+                    <Edit size={12} />
+                  </button>
+                </div>
+                <button
+                  onClick={() => setShowWarehouseEditor(true)}
+                  className="btn btn-secondary"
+                  title="Warehouse Location"
+                >
+                  <Home size={16} /> Depot
+                </button>
                 <button onClick={handleDownloadReport} className="btn btn-secondary">
-                  <Download size={16} /> Download Report
+                  <Download size={16} /> Download
                 </button>
                 <button onClick={() => openOrderEditor(null)} className="btn btn-secondary">
-                  <Plus size={16} /> Add Order
+                  <Plus size={16} /> Order
+                </button>
+                <button onClick={handleClearRoutes} className="btn btn-secondary" style={{ color: 'var(--failed)' }}>
+                  <RefreshCcw size={16} /> Clear
                 </button>
                 <button onClick={handleOptimize} disabled={isOptimizing} className="btn btn-primary">
                   <Zap size={16} /> {isOptimizing ? 'Optimizing...' : 'Run Optimizer'}
@@ -573,6 +938,25 @@ export default function Dashboard() {
                 <div className="scrollable" style={{ padding: '1.5rem', flex: 1 }}>
                   {activeInfoTab === 'activity' && (
                     <div className="activity-feed">
+                      {activityFeed.length > 0 && (
+                        <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
+                          <button
+                            onClick={() => setActivityFeed([])}
+                            className="btn btn-secondary"
+                            style={{
+                              fontSize: '0.7rem',
+                              padding: '4px 8px',
+                              borderColor: 'var(--text-dim)',
+                              color: 'var(--text-dim)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            <X size={12} /> Clear Activity
+                          </button>
+                        </div>
+                      )}
                       {activityFeed.map((item, idx) => (
                         <div key={idx} className={`activity-item ${['ALERT', 'SYSTEM'].includes(item.type) ? 'has-icon' : ''}`}>
                           <div className="activity-content">
@@ -592,6 +976,25 @@ export default function Dashboard() {
 
                   {activeInfoTab === 'pending' && (
                     <div id="pending-list">
+                      {pendingOrders.length > 0 && (
+                        <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
+                          <button
+                            onClick={handleDeleteAllPending}
+                            className="btn btn-secondary"
+                            style={{
+                              fontSize: '0.7rem',
+                              padding: '4px 8px',
+                              borderColor: 'var(--failed)',
+                              color: 'var(--failed)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            <Trash2 size={12} /> Delete All Pending
+                          </button>
+                        </div>
+                      )}
                       {pendingOrders.map(order => (
                         <div
                           key={order.id}
@@ -654,32 +1057,105 @@ export default function Dashboard() {
         {/* Other Views Placeholder */}
         {activeView === 'fleet' && (
           <section className="glass" style={{ height: '100%', padding: '1rem', display: 'flex', flexDirection: 'column' }}>
-            <h3>Shift & Assignment Board</h3>
-            <div className="scrollable" style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem', alignContent: 'start' }}>
-              {drivers.map(d => {
-                const isOnline = d.last_seen && (new Date() - new Date(d.last_seen)) < (5 * 60 * 1000);
-                return (
-                  <div key={d.id} className="driver-mini-card" style={{ cursor: 'pointer' }} onClick={() => openDriverEditor(d)}>
-                    <div className="driver-header" style={{ justifyContent: 'space-between' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <div className="status-dot" style={{ background: isOnline ? 'var(--delivered)' : '#666', boxShadow: isOnline ? '0 0 8px var(--delivered)' : 'none' }}></div>
-                        <div>
-                          <b style={{ display: 'block' }}>{d.full_name}</b>
-                          <small style={{ color: 'var(--accent-blue)' }}>{d.assigned_vehicle || 'No Vehicle'}</small>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div>
+                <h3 style={{ marginBottom: '4px' }}>Shift & Assignment Board</h3>
+                <small style={{ color: 'var(--accent-blue)', fontWeight: 'bold' }}>
+                  Period: {currentPeriod ? `${currentPeriod.name} (${currentPeriod.start_date} to ${currentPeriod.end_date})` :
+                    `${new Date(selectedDate).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}${selectedDate === new Date().toISOString().split('T')[0] ? ' (Today)' : ''}`}
+                </small>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Select Period:</span>
+                  <select
+                    value={currentPeriod?.id || 'daily'}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === 'daily') setCurrentPeriod(null);
+                      else setCurrentPeriod(periods.find(p => p.id === val));
+                    }}
+                    style={{
+                      background: 'rgba(0,0,0,0.3)',
+                      border: '1px solid rgba(255,255,255,0.2)',
+                      color: 'white',
+                      fontSize: '0.8rem',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <option value="daily" style={{ background: '#1a1d29' }}>Daily View</option>
+                    {periods.map(p => (
+                      <option key={p.id} value={p.id} style={{ background: '#1a1d29' }}>{p.name} ({p.start_date} to {p.end_date})</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  onClick={() => { setEditingPeriod(null); setShowPeriodManager(true); }}
+                  className="btn btn-primary"
+                  style={{ fontSize: '0.75rem', padding: '6px 12px' }}
+                >
+                  <Plus size={14} /> Create New Period
+                </button>
+                <span className="badge" style={{ background: 'rgba(0,210,255,0.1)', color: 'var(--accent-blue)' }}>
+                  Targeting: In-Service Vehicles Only
+                </span>
+              </div>
+            </div>
+
+            <div className="scrollable" style={{ flex: 1 }}>
+              {(() => {
+                const activeDrivers = drivers.filter(d => {
+                  const v = vehicles.find(veh => veh.plate_number === d.assigned_vehicle);
+                  return v && v.is_active;
+                });
+
+                if (activeDrivers.length === 0) {
+                  return (
+                    <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-dim)' }}>
+                      <p>No drivers with <b>In-Service</b> vehicles assigned.</p>
+                      <small>Enable vehicles in the "Vehicles" tab to see them here.</small>
+                    </div>
+                  );
+                }
+
+                // If a period is selected, show Roster management
+                if (currentPeriod) {
+                  const rostered = activeDrivers.filter(d => periodAssignments.includes(d.id));
+                  const unassigned = activeDrivers.filter(d => !periodAssignments.includes(d.id));
+
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+                      <div>
+                        <h4 style={{ color: 'var(--delivered)', marginBottom: '1rem', borderBottom: '1px solid rgba(0,255,150,0.1)', paddingBottom: '8px' }}>
+                          Rostered for {currentPeriod.name} ({rostered.length})
+                        </h4>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1rem' }}>
+                          {rostered.length === 0 && <p style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>No drivers rostered yet.</p>}
+                          {rostered.map(d => renderDriverCard(d, true))}
                         </div>
                       </div>
-                      <div style={{ display: 'flex', gap: '5px' }}>
-                        <button className="btn btn-primary" style={{ padding: '4px 8px', fontSize: '0.6rem' }} onClick={(e) => { e.stopPropagation(); checkIn(d.id); }}>Start Shift</button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '0.6rem' }} onClick={(e) => { e.stopPropagation(); checkOut(d.id); }}>End Shift</button>
+
+                      <div>
+                        <h4 style={{ color: 'var(--text-dim)', marginBottom: '1rem', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '8px' }}>
+                          Available Pool (Not in Roster)
+                        </h4>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1rem' }}>
+                          {unassigned.map(d => renderDriverCard(d, false))}
+                        </div>
                       </div>
                     </div>
-                    <div className="activity-content" style={{ marginTop: '5px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>Live Status: <b>{isOnline ? 'ONLINE' : 'OFFLINE'}</b></div>
-                      <div style={{ fontSize: '0.75rem', color: '#fff' }}>📞 {d.contact_number || '-'}</div>
-                    </div>
+                  );
+                }
+
+                // Default Today/Daily view
+                return (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1rem' }}>
+                    {activeDrivers.map(d => renderDriverCard(d))}
                   </div>
                 );
-              })}
+              })()}
             </div>
           </section>
         )}
@@ -698,7 +1174,16 @@ export default function Dashboard() {
                     <b>{v.plate_number}</b>
                   </div>
                   <div className="activity-content">
-                    <div>Type: {v.type} | Cap: {v.capacity_weight}kg</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Type: {v.type} | Cap: {v.capacity_weight}kg</span>
+                      <span style={{
+                        color: v.is_active ? 'var(--delivered)' : 'var(--failed)',
+                        fontSize: '0.7rem',
+                        fontWeight: 'bold'
+                      }}>
+                        {v.is_active ? 'IN SERVICE' : 'OUT OF SERVICE'}
+                      </span>
+                    </div>
                     <div style={{ fontSize: '0.7rem', color: '#aaa', marginTop: '4px' }}>
                       Last Activity: {v.last_activity ? new Date(v.last_activity).toLocaleString() : 'Never'}
                     </div>
@@ -716,19 +1201,29 @@ export default function Dashboard() {
               <button className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => openDriverEditor(null)}>+ New Driver</button>
             </div>
             <div className="scrollable" style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '1rem', alignContent: 'start' }}>
-              {drivers.map(d => (
-                <div key={d.id} className="driver-mini-card" style={{ cursor: 'pointer' }} onClick={() => openDriverEditor(d)}>
-                  <div className="driver-header">
-                    <div className="status-dot" style={{ background: d.is_active ? 'var(--delivered)' : 'var(--failed)' }}></div>
-                    <b>{d.full_name}</b>
+              {drivers.map(d => {
+                const isOnline = d.last_seen && (new Date() - new Date(d.last_seen)) < (5 * 60 * 1000);
+                return (
+                  <div key={d.id} className="driver-mini-card" style={{ cursor: 'pointer' }} onClick={() => openDriverEditor(d)}>
+                    <div className="driver-header">
+                      <div className="status-dot" style={{
+                        background: isOnline ? 'var(--delivered)' : '#666',
+                        boxShadow: isOnline ? '0 0 8px var(--delivered)' : 'none'
+                      }}></div>
+                      <b>{d.full_name}</b>
+                    </div>
+                    <div className="activity-content">
+                      <div style={{ color: isOnline ? 'var(--delivered)' : 'var(--text-dim)', fontWeight: '600' }}>
+                        {isOnline ? 'ONLINE' : 'OFFLINE'}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#aaa', margin: '4px 0' }}>
+                        Account: {d.is_active ? 'Active' : 'Disabled'} | 📞 {d.contact_number || '-'}
+                      </div>
+                      <div style={{ color: 'var(--accent-blue)', fontSize: '0.75rem' }}>Vehicle: {d.assigned_vehicle || 'NONE'}</div>
+                    </div>
                   </div>
-                  <div className="activity-content">
-                    <div>Status: {d.is_active ? 'Active' : 'Offline/Disabled'}</div>
-                    <div style={{ fontSize: '0.75rem', color: '#fff', margin: '2px 0' }}>📞 {d.contact_number || 'No Contact Info'}</div>
-                    <div style={{ color: 'var(--accent-blue)', fontSize: '0.75rem' }}>Assigned: {d.assigned_vehicle || 'NONE'}</div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         )}
@@ -918,6 +1413,16 @@ export default function Dashboard() {
                 />
               </div>
             </div>
+            <div className="form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: '10px', marginTop: '10px' }}>
+              <input
+                name="is_active"
+                type="checkbox"
+                defaultChecked={editingVehicle ? editingVehicle.is_active : true}
+                id="vehicle-is-active"
+                style={{ width: '18px', height: '18px' }}
+              />
+              <label htmlFor="vehicle-is-active" style={{ marginBottom: 0 }}>Vehicle is In Service (Available for Routes)</label>
+            </div>
             <div className="form-actions">
               <button type="submit" className="btn btn-primary">
                 {editingVehicle ? 'Save Changes' : 'Create Vehicle'}
@@ -967,9 +1472,11 @@ export default function Dashboard() {
                 <label>Assigned Vehicle</label>
                 <select name="assigned_vehicle" defaultValue={editingDriver?.assigned_vehicle || ''}>
                   <option value="">-- None --</option>
-                  {vehicles.map(v => (
-                    <option key={v.id} value={v.plate_number}>{v.plate_number} ({v.type})</option>
-                  ))}
+                  {vehicles
+                    .filter(v => v.is_active || v.plate_number === editingDriver?.assigned_vehicle)
+                    .map(v => (
+                      <option key={v.id} value={v.plate_number}>{v.plate_number} ({v.type})</option>
+                    ))}
                 </select>
               </div>
             </div>
@@ -1083,6 +1590,233 @@ export default function Dashboard() {
                 Cancel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Warehouse Editor Modal */}
+      {showWarehouseEditor && (
+        <div className="editor-overlay active glass">
+          <div className="editor-header">
+            <h3>Warehouse / Depot Location</h3>
+            <button onClick={() => setShowWarehouseEditor(false)} className="close-btn">&times;</button>
+          </div>
+          <div className="editor-body">
+            <form onSubmit={handleSaveWarehouse}>
+              <div className="form-group">
+                <label>Warehouse Name</label>
+                <input
+                  type="text"
+                  name="name"
+                  defaultValue={warehouse?.name || 'Main Warehouse'}
+                  placeholder="e.g. Central Depot"
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Address</label>
+                <input
+                  type="text"
+                  name="address"
+                  defaultValue={warehouse?.address || ''}
+                  placeholder="Full Address"
+                  required
+                />
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Latitude</label>
+                  <input
+                    type="number"
+                    name="lat"
+                    step="any"
+                    defaultValue={warehouse?.lat || 1.3521}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Longitude</label>
+                  <input
+                    type="number"
+                    name="lng"
+                    step="any"
+                    defaultValue={warehouse?.lng || 103.8198}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary">
+                  Save Location
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowWarehouseEditor(false)}
+                  className="btn btn-secondary"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Clear Routes Confirmation Modal */}
+      {showClearRoutesConfirm && (
+        <div className="editor-overlay active glass">
+          <div className="editor-header" style={{ borderBottom: 'none' }}>
+            <h3>Confirm Clear Routes</h3>
+            <button onClick={() => setShowClearRoutesConfirm(false)} className="close-btn">&times;</button>
+          </div>
+          <div className="editor-body" style={{ padding: '2rem', textAlign: 'center' }}>
+            <p style={{ marginBottom: '2rem', fontSize: '1.1rem' }}>
+              Are you sure you want to clear all routes for today?
+              <br />
+              <span style={{ fontSize: '0.9rem', color: 'var(--text-dim)' }}>This will reset all orders back to the PENDING state.</span>
+            </p>
+            <div className="form-actions" style={{ justifyContent: 'center' }}>
+              <button onClick={confirmClearRoutes} className="btn btn-danger">
+                Yes, Clear All Routes
+              </button>
+              <button onClick={() => setShowClearRoutesConfirm(false)} className="btn btn-secondary">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete All Pending Confirmation Modal */}
+      {showDeleteAllPendingConfirm && (
+        <div className="editor-overlay active glass">
+          <div className="editor-header" style={{ borderBottom: 'none' }}>
+            <h3>Confirm Delete All Orders</h3>
+            <button onClick={() => setShowDeleteAllPendingConfirm(false)} className="close-btn">&times;</button>
+          </div>
+          <div className="editor-body" style={{ padding: '2rem', textAlign: 'center' }}>
+            <p style={{ marginBottom: '2rem', fontSize: '1.1rem' }}>
+              Are you sure you want to delete ALL pending orders?
+              <br />
+              <span style={{ fontSize: '0.9rem', color: 'var(--text-dim)' }}>This action cannot be undone.</span>
+            </p>
+            <div className="form-actions" style={{ justifyContent: 'center' }}>
+              <button onClick={confirmDeleteAllPending} className="btn btn-danger">
+                Yes, Delete Everything
+              </button>
+              <button onClick={() => setShowDeleteAllPendingConfirm(false)} className="btn btn-secondary">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Period Manager Modal */}
+      {showPeriodManager && (
+        <div className="editor-overlay active glass">
+          <div className="editor-header">
+            <h3>{editingPeriod ? 'Edit Period' : 'Manage Planning Periods'}</h3>
+            <button onClick={() => { setShowPeriodManager(false); setEditingPeriod(null); }} className="close-btn">&times;</button>
+          </div>
+          <div className="editor-body" style={{ maxHeight: '80vh', overflowY: 'auto' }}>
+            <form onSubmit={handleSavePeriod} style={{ marginBottom: '2rem', padding: '1rem', background: 'rgba(255,255,255,0.05)', borderRadius: '12px' }}>
+              <div className="form-group">
+                <label>Period Name (e.g. Week 5, Feb Rush)</label>
+                <input
+                  name="name"
+                  type="text"
+                  defaultValue={editingPeriod?.name}
+                  placeholder="Enter period name..."
+                  required
+                />
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Start Date</label>
+                  <input
+                    name="start_date"
+                    type="date"
+                    defaultValue={editingPeriod?.start_date || new Date().toISOString().split('T')[0]}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label>End Date</label>
+                  <input
+                    name="end_date"
+                    type="date"
+                    defaultValue={editingPeriod?.end_date || new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary">
+                  {editingPeriod ? 'Update Period' : 'Add New Period'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowPeriodManager(false); setEditingPeriod(null); }}
+                  className="btn btn-secondary"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+
+            <h4>Existing Periods</h4>
+            <div style={{ display: 'grid', gap: '10px', marginTop: '10px' }}>
+              {periods.length === 0 ? (
+                <p style={{ color: 'var(--text-dim)', textAlign: 'center' }}>No periods defined yet.</p>
+              ) : (
+                periods.map(p => (
+                  <div key={p.id} className="driver-mini-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px' }}>
+                    <div>
+                      <b style={{ display: 'block' }}>{p.name}</b>
+                      <small style={{ color: 'var(--accent-blue)' }}>{p.start_date} to {p.end_date}</small>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button onClick={() => setEditingPeriod(p)} className="icon-btn" title="Edit"><Edit size={14} /></button>
+                      <button onClick={() => handleDeletePeriod(p.id)} className="icon-btn" style={{ color: 'var(--failed)' }} title="Delete"><Trash2 size={14} /></button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {editingPeriod && (
+              <div style={{ marginTop: '2rem', padding: '1rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                <h4 style={{ marginBottom: '1rem' }}>Assign Drivers to "{editingPeriod.name}"</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '10px' }}>
+                  {drivers.map(d => (
+                    <div
+                      key={d.id}
+                      onClick={() => toggleDriverPeriodAssignment(d.id)}
+                      style={{
+                        padding: '10px',
+                        borderRadius: '8px',
+                        background: periodAssignments.includes(d.id) ? 'rgba(0, 210, 255, 0.15)' : 'rgba(255,255,255,0.05)',
+                        border: periodAssignments.includes(d.id) ? '1px solid var(--accent-blue)' : '1px solid transparent',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{
+                          width: '12px',
+                          height: '12px',
+                          borderRadius: '50%',
+                          background: periodAssignments.includes(d.id) ? 'var(--accent-blue)' : 'rgba(255,255,255,0.2)'
+                        }}></div>
+                        <span style={{ fontSize: '0.85rem' }}>{d.full_name}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

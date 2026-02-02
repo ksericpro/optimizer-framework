@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Polyline, Tooltip, ZoomControl, LayerGroup } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Polyline, Tooltip, ZoomControl, LayerGroup, Marker, Popup } from 'react-leaflet';
 import { Home } from 'lucide-react';
 import L from 'leaflet';
 
@@ -15,12 +15,15 @@ const fixLeafletIcons = () => {
     });
 };
 
-export default function Map({ routes = [], pendingOrders = [], driverLocations = {}, onOrderClick, focusedLocation }) {
+export default function Map({ routes = [], pendingOrders = [], driverLocations = {}, onOrderClick, focusedLocation, warehouse }) {
     const [map, setMap] = useState(null);
 
     useEffect(() => {
         fixLeafletIcons();
     }, []);
+
+    const defaultCenter = [1.3521, 103.8198];
+    const depotCenter = warehouse ? [warehouse.lat, warehouse.lng] : defaultCenter;
 
     useEffect(() => {
         if (map && focusedLocation) {
@@ -37,7 +40,7 @@ export default function Map({ routes = [], pendingOrders = [], driverLocations =
         <div style={{ position: 'relative', height: '100%', width: '100%' }}>
             <MapContainer
                 ref={setMap}
-                center={[1.3521, 103.8198]}
+                center={depotCenter}
                 zoom={12}
                 style={{ height: '100%', width: '100%', background: '#1a1c2c' }}
                 zoomControl={false}
@@ -47,6 +50,21 @@ export default function Map({ routes = [], pendingOrders = [], driverLocations =
                     url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
                 />
+
+                {/* Warehouse / Depot */}
+                {warehouse && (
+                    <Marker position={[warehouse.lat, warehouse.lng]}>
+                        <Popup>
+                            <div className="popup-content">
+                                <b>DEPOT: {warehouse.name}</b><br />
+                                {warehouse.address}
+                            </div>
+                        </Popup>
+                        <Tooltip permanent direction="top" offset={[0, -20]} className="depot-tooltip">
+                            Depot
+                        </Tooltip>
+                    </Marker>
+                )}
 
                 {/* Pending Orders */}
                 {pendingOrders.map(order => (
@@ -71,7 +89,7 @@ export default function Map({ routes = [], pendingOrders = [], driverLocations =
 
                 {/* Routes & Stops */}
                 {routes.map((route, idx) => {
-                    const routeCoords = [[1.3521, 103.8198], ...route.stops.map(s => [s.lat, s.lng])];
+                    const routeCoords = [depotCenter, ...route.stops.map(s => [s.lat, s.lng])];
                     const routeColor = colors[idx % colors.length];
 
                     return (
@@ -138,7 +156,7 @@ export default function Map({ routes = [], pendingOrders = [], driverLocations =
                 onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    map?.setView([1.3521, 103.8198], 12);
+                    map?.setView(depotCenter, 12);
                 }}
                 title="Reset View"
                 style={{

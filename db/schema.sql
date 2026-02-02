@@ -21,11 +21,15 @@ CREATE TABLE vehicles (
 CREATE TABLE drivers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     full_name VARCHAR(100) NOT NULL,
-    phone_number VARCHAR(20),
-    max_jobs_per_day INTEGER DEFAULT 20, -- Parameter derived from data model
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    contact_number VARCHAR(20),
+    max_jobs_per_day INTEGER DEFAULT 20,
     last_known_lat FLOAT,
     last_known_lng FLOAT,
+    assigned_vehicle_id UUID REFERENCES vehicles(id),
     is_active BOOLEAN DEFAULT TRUE,
+    last_seen TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -108,3 +112,32 @@ CREATE TRIGGER update_order_modtime
     BEFORE UPDATE ON orders
     FOR EACH ROW
     EXECUTE PROCEDURE update_updated_at_column();
+
+-- Period Management
+CREATE TABLE periods (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Driver to Period Assignments (Roster)
+CREATE TABLE driver_period_assignments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    period_id UUID REFERENCES periods(id) ON DELETE CASCADE,
+    driver_id UUID REFERENCES drivers(id) ON DELETE CASCADE,
+    assigned_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(period_id, driver_id)
+);
+
+-- Warehouse/Depot Configuration
+CREATE TABLE IF NOT EXISTS warehouse (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) NOT NULL,
+    address TEXT NOT NULL,
+    lat FLOAT NOT NULL,
+    lng FLOAT NOT NULL,
+    is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);

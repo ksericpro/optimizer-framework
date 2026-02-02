@@ -157,3 +157,18 @@ uv run uvicorn api.main:app_with_sio --reload
 
 ## dashboard
 http://localhost:8000/dashboard
+http://localhost:8000/driver
+
+## Next js
+cd optimizer-ui
+npm run dev
+http://localhost:3000
+http://localhost:3000/driver
+
+john 123456
+
+## new features Implementation
+
+1. Processed Order List 
+2. Click order on map to cancel route
+3. Moving of Depot

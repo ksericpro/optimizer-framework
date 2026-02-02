@@ -205,6 +205,9 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
     cur.close()
     conn.close()
     
+    # Emit fleet update for dashboard
+    await sio.emit('fleet_update', {'driver_id': str(user['id']), 'status': 'ONLINE'})
+    
     access_token = create_access_token(data={"sub": str(user['id'])})
     return {"access_token": access_token, "token_type": "bearer", "driver_id": user['id']}
 
@@ -217,6 +220,9 @@ async def logout(current_driver: str = Depends(get_current_driver)):
     conn.commit()
     cur.close()
     conn.close()
+    
+    # Emit fleet update for dashboard
+    await sio.emit('fleet_update', {'driver_id': str(current_driver), 'status': 'OFFLINE'})
     return {"message": "Logged out successfully"}
 
 @app.post("/drivers/{identifier}/check-in")
@@ -269,6 +275,21 @@ async def driver_check_in(identifier: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/drivers/heartbeat")
+async def driver_heartbeat(current_driver: str = Depends(get_current_driver)):
+    """Keep the driver online by updating last_seen."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE drivers SET last_seen = NOW() WHERE id = %s", (current_driver,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "alive"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/drivers/{identifier}/check-out")
 async def driver_check_out(identifier: str):
@@ -325,9 +346,10 @@ async def get_fleet():
         drivers = cur.fetchall()
         
         cur.execute("""
-            SELECT v.*, d.full_name as driver_name, d.last_seen as last_activity
+            SELECT DISTINCT ON (v.id) v.*, d.full_name as driver_name, d.last_seen as last_activity
             FROM vehicles v
             LEFT JOIN drivers d ON d.assigned_vehicle_id = v.id
+            ORDER BY v.id, d.last_seen DESC NULLS LAST
         """)
         vehicles = cur.fetchall()
         
@@ -340,14 +362,14 @@ async def get_fleet():
 
 # --- Vehicle CRUD ---
 @app.post("/vehicles")
-async def create_vehicle(plate_number: str, type: str, capacity_weight: float = 0, capacity_volume: float = 0):
+async def create_vehicle(plate_number: str, type: str, capacity_weight: float = 0, capacity_volume: float = 0, is_active: bool = True):
     """Creates a new vehicle."""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO vehicles (plate_number, type, capacity_weight, capacity_volume) VALUES (%s, %s, %s, %s) RETURNING id",
-            (plate_number.upper(), type.upper(), capacity_weight, capacity_volume)
+            "INSERT INTO vehicles (plate_number, type, capacity_weight, capacity_volume, is_active) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (plate_number.upper(), type.upper(), capacity_weight, capacity_volume, is_active)
         )
         vid = cur.fetchone()['id']
         conn.commit()
@@ -358,7 +380,7 @@ async def create_vehicle(plate_number: str, type: str, capacity_weight: float = 
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/vehicles/{vehicle_id}")
-async def update_vehicle(vehicle_id: str, plate_number: Optional[str] = None, type: Optional[str] = None, capacity_weight: Optional[float] = None):
+async def update_vehicle(vehicle_id: str, plate_number: Optional[str] = None, type: Optional[str] = None, capacity_weight: Optional[float] = None, is_active: Optional[bool] = None):
     """Updates vehicle details."""
     try:
         conn = get_db_conn()
@@ -373,6 +395,9 @@ async def update_vehicle(vehicle_id: str, plate_number: Optional[str] = None, ty
         if capacity_weight is not None:
             updates.append("capacity_weight = %s")
             params.append(capacity_weight)
+        if is_active is not None:
+            updates.append("is_active = %s")
+            params.append(is_active)
         
         if updates:
             params.append(vehicle_id)
@@ -459,11 +484,250 @@ async def delete_driver(driver_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- Period CRUD ---
+@app.get("/periods")
+async def get_periods():
+    """Fetches all defined periods."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM periods ORDER BY start_date DESC")
+        periods = cur.fetchall()
+        cur.close()
+        conn.close()
+        return periods
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/periods")
+async def create_period(name: str, start_date: str, end_date: str):
+    """Creates a new period (date range)."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO periods (name, start_date, end_date) VALUES (%s, %s, %s) RETURNING id",
+            (name, start_date, end_date)
+        )
+        pid = cur.fetchone()['id']
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"id": pid, "message": "Period created"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/periods/{period_id}")
+async def update_period(period_id: str, name: Optional[str] = None, start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """Updates an existing period."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        updates, params = [], []
+        if name:
+            updates.append("name = %s")
+            params.append(name)
+        if start_date:
+            updates.append("start_date = %s")
+            params.append(start_date)
+        if end_date:
+            updates.append("end_date = %s")
+            params.append(end_date)
+        
+        if updates:
+            params.append(period_id)
+            cur.execute(f"UPDATE periods SET {', '.join(updates)} WHERE id = %s", params)
+            conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Period updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/periods/{period_id}")
+async def delete_period(period_id: str):
+    """Deletes a period."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM periods WHERE id = %s", (period_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Period deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Driver Period Assignments (Rostering) ---
+@app.get("/periods/{period_id}/assignments")
+async def get_period_assignments(period_id: str):
+    """Fetches all driver assignments for a specific period."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT driver_id FROM driver_period_assignments WHERE period_id = %s", (period_id,))
+        assignments = [r['driver_id'] for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return assignments
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/periods/{period_id}/drivers/{driver_id}")
+async def assign_driver_to_period(period_id: str, driver_id: str):
+    """Assigns a driver to a specific period (Roster)."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO driver_period_assignments (period_id, driver_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (period_id, driver_id)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Driver assigned to period"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/periods/{period_id}/drivers/{driver_id}")
+async def unassign_driver_from_period(period_id: str, driver_id: str):
+    """Removes a driver from a specific period (Roster)."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM driver_period_assignments WHERE period_id = %s AND driver_id = %s",
+            (period_id, driver_id)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Driver unassigned from period"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Warehouse/Depot Management ---
+@app.get("/warehouse")
+async def get_warehouses():
+    """Fetches all warehouses."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM warehouse ORDER BY is_default DESC, created_at DESC")
+        warehouses = cur.fetchall()
+        cur.close()
+        conn.close()
+        return warehouses
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/warehouse/default")
+async def get_default_warehouse():
+    """Fetches the default warehouse."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM warehouse WHERE is_default = TRUE LIMIT 1")
+        warehouse = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not warehouse:
+            raise HTTPException(status_code=404, detail="No default warehouse found")
+        return warehouse
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/warehouse")
+async def create_warehouse(name: str, address: str, lat: float, lng: float, is_default: bool = False):
+    """Creates a new warehouse."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        # If setting as default, unset other defaults
+        if is_default:
+            cur.execute("UPDATE warehouse SET is_default = FALSE")
+        
+        cur.execute(
+            "INSERT INTO warehouse (name, address, lat, lng, is_default) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (name, address, lat, lng, is_default)
+        )
+        warehouse_id = cur.fetchone()['id']
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"id": warehouse_id, "message": "Warehouse created"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/warehouse/{warehouse_id}")
+async def update_warehouse(warehouse_id: str, name: Optional[str] = None, address: Optional[str] = None, lat: Optional[float] = None, lng: Optional[float] = None, is_default: Optional[bool] = None):
+    """Updates warehouse details."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        updates = []
+        params = []
+        
+        if name is not None:
+            updates.append("name = %s")
+            params.append(name)
+        if address is not None:
+            updates.append("address = %s")
+            params.append(address)
+        if lat is not None:
+            updates.append("lat = %s")
+            params.append(lat)
+        if lng is not None:
+            updates.append("lng = %s")
+            params.append(lng)
+        if is_default is not None:
+            if is_default:
+                cur.execute("UPDATE warehouse SET is_default = FALSE")
+            updates.append("is_default = %s")
+            params.append(is_default)
+        
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        
+        params.append(warehouse_id)
+        query = f"UPDATE warehouse SET {', '.join(updates)} WHERE id = %s"
+        cur.execute(query, params)
+        
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Warehouse not found")
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Warehouse updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/warehouse/{warehouse_id}")
+async def delete_warehouse(warehouse_id: str):
+    """Deletes a warehouse."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM warehouse WHERE id = %s", (warehouse_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Warehouse not found")
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"message": "Warehouse deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/optimize")
 @limiter.limit(CONFIG["rate_limits"]["optimize"])
-async def trigger_optimization(request: Request):
-    """Triggers the daily route optimization process, preceded by the Data Model loop."""
-    logger.info("Triggering full optimization cycle...")
+async def trigger_optimization(request: Request, date: Optional[str] = None):
+    """Triggers the route optimization process for a specific date (Period)."""
+    logger.info(f"Triggering optimization cycle for date: {date or 'Today'}...")
+    
     # 1. Run Data Model Loop to update driver parameters from history
     dm_result = run_data_model_loop()
     if dm_result["status"] == "error":
@@ -471,7 +735,7 @@ async def trigger_optimization(request: Request):
         raise HTTPException(status_code=500, detail=f"Data Model Error: {dm_result['message']}")
     
     # 2. Run Route Optimizer
-    opt_result = run_optimization()
+    opt_result = run_optimization(planned_date=date)
     if opt_result["status"] == "error":
         logger.error(f"Optimizer Error: {opt_result['message']}")
         raise HTTPException(status_code=400, detail=f"Optimizer Error: {opt_result['message']}")
@@ -479,9 +743,55 @@ async def trigger_optimization(request: Request):
     logger.info("Optimization cycle completed successfully.")
         
     return {
+        "status": "success",
+        "date": date or str(datetime.now().date()),
         "data_model": dm_result,
         "optimizer": opt_result
     }
+
+@app.get("/routes")
+async def get_all_routes(date: Optional[str] = None, start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """Fetches all planned routes and stops for a specific date or date range."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        if start_date and end_date:
+            cur.execute("""
+                SELECT r.id as route_id, r.driver_id, d.full_name, r.status, r.planned_date
+                FROM routes r
+                JOIN drivers d ON r.driver_id = d.id
+                WHERE r.planned_date BETWEEN %s AND %s
+            """, (start_date, end_date))
+        else:
+            target_date = date if date else str(datetime.now().date())
+            cur.execute("""
+                SELECT r.id as route_id, r.driver_id, d.full_name, r.status, r.planned_date
+                FROM routes r
+                JOIN drivers d ON r.driver_id = d.id
+                WHERE r.planned_date = %s
+            """, (target_date,))
+            
+        routes = cur.fetchall()
+        
+        results = []
+        for route in routes:
+            cur.execute("""
+                SELECT rs.id as stop_id, rs.sequence_number, rs.estimated_arrival_time, 
+                       rs.status as stop_status, o.delivery_address, o.lat, o.lng, o.priority
+                FROM route_stops rs
+                JOIN orders o ON rs.order_id = o.id
+                WHERE rs.route_id = %s
+                ORDER BY rs.sequence_number
+            """, (route['route_id'],))
+            stops = cur.fetchall()
+            results.append({**route, "stops": stops})
+            
+        cur.close()
+        conn.close()
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/orders")
@@ -564,6 +874,31 @@ async def update_order(order_id: str, delivery_address: Optional[str] = None, la
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/orders/pending")
+async def delete_all_pending_orders():
+    """Deletes all PENDING orders that are not assigned to any route."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        # Only delete orders that are PENDING and NOT in route_stops
+        cur.execute("""
+            DELETE FROM orders 
+            WHERE status = 'PENDING' 
+            AND id NOT IN (SELECT order_id FROM route_stops WHERE order_id IS NOT NULL)
+        """)
+        
+        count = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        logger.info(f"Deleted {count} pending orders")
+        return {"message": f"Deleted {count} pending orders."}
+    except Exception as e:
+        logger.error(f"Error deleting pending orders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/orders/{order_id}")
 async def delete_order(order_id: str):
     """Deletes an order (only if it's PENDING and not in a route)."""
@@ -586,6 +921,7 @@ async def delete_order(order_id: str):
         return {"message": "Order deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.get("/routes/today")
@@ -622,7 +958,43 @@ async def get_all_routes_today():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/drivers/{driver_id}/route")
+@app.delete("/routes")
+async def clear_all_routes(date: Optional[str] = None):
+    """Clears all routes for a specific date and resets associated orders to PENDING."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        target_date = date if date else str(datetime.now().date())
+        
+        # 1. Update orders to PENDING if they were assigned to this date's routes
+        cur.execute("""
+            UPDATE orders 
+            SET status = 'PENDING' 
+            WHERE id IN (
+                SELECT rs.order_id 
+                FROM route_stops rs
+                JOIN routes r ON rs.route_id = r.id
+                WHERE r.planned_date = %s
+            )
+        """, (target_date,))
+        
+        # 2. Delete the route stops and routes
+        cur.execute("""
+            DELETE FROM route_stops 
+            WHERE route_id IN (SELECT id FROM routes WHERE planned_date = %s)
+        """, (target_date,))
+        cur.execute("DELETE FROM routes WHERE planned_date = %s", (target_date,))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        await sio.emit('fleet_update', {'message': f'Routes for {target_date} cleared'})
+        
+        return {"message": f"All routes for {target_date} have been cleared and orders reset to pending."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 async def get_driver_route(driver_id: str, current_driver: str = Depends(get_current_driver)):
     """Fetches the planned route and stops for a specific driver for today."""
     # Security: Ensure driver can only see their own route
@@ -703,6 +1075,7 @@ async def update_stop_status(stop_id: str, status: str, reason: Optional[str] = 
         cur.close()
         conn.close()
         
+        await sio.emit('fleet_update', {'driver_id': current_driver, 'status': 'STOP_UPDATE'})
         return {"message": "Status updated successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -861,11 +1234,14 @@ async def get_driver_analytics(driver_id: str):
 
 
 @app.get("/reports/daily")
-async def get_daily_report():
-    """Generates a CSV report for today's deliveries."""
+async def get_daily_report(date: Optional[str] = None):
+    """Generates a CSV report for deliveries on a specific date (Period)."""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
+        
+        target_date = date if date else str(datetime.now().date())
+        
         cur.execute("""
             SELECT 
                 d.full_name as driver,
@@ -879,9 +1255,9 @@ async def get_daily_report():
             JOIN orders o ON rs.order_id = o.id
             JOIN routes r ON rs.route_id = r.id
             JOIN drivers d ON r.driver_id = d.id
-            WHERE r.planned_date = CURRENT_DATE
+            WHERE r.planned_date = %s
             ORDER BY d.full_name, rs.sequence_number
-        """)
+        """, (target_date,))
         rows = cur.fetchall()
         cur.close()
         conn.close()

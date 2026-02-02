@@ -12,8 +12,22 @@ import psycopg2
 # Database Connection
 DB_PARAMS = get_db_params()
 
-def get_data_from_db():
+def get_data_from_db(planned_date=None):
     conn = psycopg2.connect(**DB_PARAMS)
+    
+    # Fetch warehouse/depot location
+    cur = conn.cursor()
+    cur.execute("SELECT lat, lng, name FROM warehouse WHERE is_default = TRUE LIMIT 1")
+    warehouse_row = cur.fetchone()
+    if warehouse_row:
+        depot_lat, depot_lng, depot_name = warehouse_row
+        logger.info(f"Using warehouse: {depot_name} ({depot_lat}, {depot_lng})")
+    else:
+        # Default fallback location (Singapore CBD)
+        depot_lat, depot_lng, depot_name = 1.2897, 103.8501, "Default Depot"
+        logger.warning("No warehouse found, using default depot location")
+    cur.close()
+    
     # Fetch orders with demands
     query_orders = """
         SELECT id, lat, lng, time_window_start, time_window_end, weight, volume
@@ -24,22 +38,44 @@ def get_data_from_db():
     """
     orders = pd.read_sql(query_orders, conn)
     
-    # Fetch drivers and their assigned vehicle capacities
-    query_drivers = """
-        SELECT d.id, d.full_name, d.max_jobs_per_day,
-               v.capacity_weight, v.capacity_volume
-        FROM drivers d
-        CROSS JOIN vehicles v -- Simplified: assuming available fleet
-        WHERE d.is_active = TRUE AND v.is_active = TRUE
-        LIMIT (SELECT COUNT(*) FROM drivers WHERE is_active = TRUE)
-    """
-    drivers = pd.read_sql(query_drivers, conn)
-    conn.close()
-    return orders, drivers
+    # 1. Identify if this date belongs to a managed Period
+    period_id = None
+    if planned_date:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM periods WHERE %s BETWEEN start_date AND end_date LIMIT 1", (planned_date,))
+        row = cur.fetchone()
+        if row:
+            period_id = row[0]
+        cur.close()
 
-def create_data_model(orders, drivers):
+    # 2. Fetch drivers. If assigned to a period, only those. Else all active with vehicles.
+    if period_id:
+        query_drivers = """
+            SELECT d.id, d.full_name, d.max_jobs_per_day,
+                   v.capacity_weight, v.capacity_volume
+            FROM drivers d
+            JOIN driver_period_assignments dpa ON d.id = dpa.driver_id
+            JOIN vehicles v ON d.assigned_vehicle_id = v.id
+            WHERE dpa.period_id = %s AND d.is_active = TRUE AND v.is_active = TRUE
+        """
+        drivers = pd.read_sql(query_drivers, conn, params=(period_id,))
+    else:
+        # Fallback to all active drivers with assigned in-service vehicles
+        query_drivers = """
+            SELECT d.id, d.full_name, d.max_jobs_per_day,
+                   v.capacity_weight, v.capacity_volume
+            FROM drivers d
+            JOIN vehicles v ON d.assigned_vehicle_id = v.id
+            WHERE d.is_active = TRUE AND v.is_active = TRUE
+        """
+        drivers = pd.read_sql(query_drivers, conn)
+        
+    conn.close()
+    return orders, drivers, (depot_lat, depot_lng)
+
+def create_data_model(orders, drivers, depot_location):
     data = {}
-    depot_lat, depot_lng = 1.3521, 103.8198
+    depot_lat, depot_lng = depot_location
     
     locations = [(depot_lat, depot_lng)]
     data['demands_weight'] = [0] # depot
@@ -61,9 +97,17 @@ def create_data_model(orders, drivers):
     
     time_windows = [(0, 1440)]
     for _, row in orders.iterrows():
-        start_min = int((row['time_window_start'].replace(tzinfo=None) - base_time).total_seconds() / 60)
-        end_min = int((row['time_window_end'].replace(tzinfo=None) - base_time).total_seconds() / 60)
-        time_windows.append((max(0, start_min), end_min))
+        # Default window: 8 AM to 8 PM (0 to 720 minutes from base_time)
+        try:
+            if row['time_window_start'] and row['time_window_end']:
+                start_min = int((row['time_window_start'].replace(tzinfo=None) - base_time).total_seconds() / 60)
+                end_min = int((row['time_window_end'].replace(tzinfo=None) - base_time).total_seconds() / 60)
+            else:
+                start_min, end_min = 0, 720
+        except:
+            start_min, end_min = 0, 720
+            
+        time_windows.append((max(0, start_min), max(start_min + 30, end_min)))
     
     data['time_windows'] = time_windows
     data['service_time'] = 10
@@ -118,17 +162,26 @@ def get_osrm_matrix(locations):
         logger.error(f"Failed to fetch OSRM matrix: {e}")
         return None
 
-def run_optimization():
+def run_optimization(planned_date=None):
+    """Main function to fetch data, build model, and solve the routing problem."""
     import traceback
     try:
-        orders, drivers = get_data_from_db()
+        if planned_date is None:
+            planned_date = datetime.now().date()
+        elif isinstance(planned_date, str):
+            planned_date = datetime.strptime(planned_date, "%Y-%m-%d").date()
+
+        orders, drivers, depot_location = get_data_from_db(planned_date=planned_date)
         if orders.empty:
             logger.warning("No pending orders found for optimization.")
             return {"status": "error", "message": "No pending orders found"}
+        if drivers.empty:
+            logger.warning("No active drivers found for optimization.")
+            return {"status": "error", "message": "No active drivers available"}
 
-        logger.info(f"Starting optimization for {len(orders)} orders and {len(drivers)} drivers.")
+        logger.info(f"Starting optimization for {len(orders)} orders and {len(drivers)} drivers for date {planned_date}.")
 
-        data = create_data_model(orders, drivers)
+        data = create_data_model(orders, drivers, depot_location)
         manager = pywrapcp.RoutingIndexManager(data['num_locations'], data['num_vehicles'], data['depot'])
         routing = pywrapcp.RoutingModel(manager)
 
@@ -143,12 +196,16 @@ def run_optimization():
         transit_callback_index = routing.RegisterTransitCallback(time_callback)
         routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
-        time_dimension_name = 'Time'
-        routing.AddDimension(transit_callback_index, 1440, 1440, False, time_dimension_name)
-        time_dimension = routing.GetDimensionOrDie(time_dimension_name)
-
+        routing.AddDimension(
+            transit_callback_index,
+            30,  # allow waiting time
+            1440, # maximum time per vehicle
+            False, # start cumul to zero
+            'Time'
+        )
+        time_dimension = routing.GetDimensionOrDie('Time')
         for location_idx, time_window in enumerate(data['time_windows']):
-            if location_idx == 0: continue 
+            if location_idx == 0: continue
             index = manager.NodeToIndex(location_idx)
             time_dimension.CumulVar(index).SetRange(int(time_window[0]), int(time_window[1]))
 
@@ -172,21 +229,11 @@ def run_optimization():
             volume_callback_index, 0, data['vehicle_capacities_volume'], True, 'Volume'
         )
 
-        # 3. Driver Breaks (Disabled for verification)
-        # break_time = 30
-        # solver = routing.solver()
-        # for vehicle_id in range(data['num_vehicles']):
-        #     break_start = 240 # 12:00 PM
-        #     break_var = solver.FixedDurationIntervalVar(int(break_start), int(break_start), int(break_time), False, f'Break_{vehicle_id}')
-        #     time_dimension.SetBreakIntervalsOfVehicle(
-        #         [break_var],
-        #         int(vehicle_id), []
-        #     )
-
         penalty = 10000
         for node in range(1, data['num_locations']):
             routing.AddDisjunction([int(manager.NodeToIndex(node))], int(penalty))
 
+        # Setting first solution heuristic.
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
         search_parameters.first_solution_strategy = (
             routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
@@ -197,22 +244,21 @@ def run_optimization():
         solution = routing.SolveWithParameters(search_parameters)
 
         if solution:
-            return save_solution(data, manager, routing, solution, drivers, orders)
+            return save_solution(data, manager, routing, solution, drivers, orders, planned_date)
         else:
             return {"status": "error", "message": "No solution found"}
     except Exception as e:
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
-def save_solution(data, manager, routing, solution, drivers, orders):
+def save_solution(data, manager, routing, solution, drivers, orders, planned_date):
     time_dimension = routing.GetDimensionOrDie('Time')
-    base_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
+    base_time = datetime.combine(planned_date, datetime.min.time()).replace(hour=8, minute=0, second=0, microsecond=0)
     
     conn = psycopg2.connect(**DB_PARAMS)
     cur = conn.cursor()
     
-    today = datetime.now().date()
-    cur.execute("DELETE FROM routes WHERE planned_date = %s", (today,))
+    cur.execute("DELETE FROM routes WHERE planned_date = %s", (planned_date,))
     
     routes_created = 0
     stops_created = 0
@@ -226,7 +272,7 @@ def save_solution(data, manager, routing, solution, drivers, orders):
 
         cur.execute(
             "INSERT INTO routes (driver_id, planned_date, status) VALUES (%s, %s, %s) RETURNING id",
-            (driver['id'], today, 'PLANNED')
+            (driver['id'], planned_date, 'PLANNED')
         )
         route_id = cur.fetchone()[0]
         routes_created += 1
