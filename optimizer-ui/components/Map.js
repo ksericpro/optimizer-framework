@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Polyline, Tooltip, ZoomControl, LayerGroup, Marker, Popup } from 'react-leaflet';
 import { Home } from 'lucide-react';
 import L from 'leaflet';
@@ -15,8 +15,9 @@ const fixLeafletIcons = () => {
     });
 };
 
-export default function Map({ routes = [], pendingOrders = [], driverLocations = {}, onOrderClick, focusedLocation, warehouse }) {
+export default function Map({ routes = [], pendingOrders = [], driverLocations = {}, onOrderClick, onRouteOrderClick, focusedLocation, warehouse, onWarehouseMove }) {
     const [map, setMap] = useState(null);
+    const depotMarkerRef = useRef(null);
 
     useEffect(() => {
         fixLeafletIcons();
@@ -36,6 +37,19 @@ export default function Map({ routes = [], pendingOrders = [], driverLocations =
 
     const colors = ['#00d2ff', '#9d50bb', '#ff0088', '#00ff88', '#ffd700'];
 
+    const depotEventHandlers = useMemo(
+        () => ({
+            dragend() {
+                const marker = depotMarkerRef.current;
+                if (marker != null) {
+                    const { lat, lng } = marker.getLatLng();
+                    onWarehouseMove && onWarehouseMove(lat, lng);
+                }
+            },
+        }),
+        [onWarehouseMove],
+    );
+
     return (
         <div style={{ position: 'relative', height: '100%', width: '100%' }}>
             <MapContainer
@@ -53,11 +67,17 @@ export default function Map({ routes = [], pendingOrders = [], driverLocations =
 
                 {/* Warehouse / Depot */}
                 {warehouse && (
-                    <Marker position={[warehouse.lat, warehouse.lng]}>
+                    <Marker
+                        position={[warehouse.lat, warehouse.lng]}
+                        draggable={true}
+                        ref={depotMarkerRef}
+                        eventHandlers={depotEventHandlers}
+                    >
                         <Popup>
                             <div className="popup-content">
                                 <b>DEPOT: {warehouse.name}</b><br />
-                                {warehouse.address}
+                                {warehouse.address}<br />
+                                <i style={{ fontSize: '0.8em' }}>Drag to move</i>
                             </div>
                         </Popup>
                         <Tooltip permanent direction="top" offset={[0, -20]} className="depot-tooltip">
@@ -114,6 +134,9 @@ export default function Map({ routes = [], pendingOrders = [], driverLocations =
                                         weight: 2,
                                         opacity: 1,
                                         fillOpacity: 1
+                                    }}
+                                    eventHandlers={{
+                                        click: () => onRouteOrderClick && onRouteOrderClick(route, stop)
                                     }}
                                 >
                                     <Tooltip>

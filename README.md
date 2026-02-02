@@ -169,6 +169,9 @@ john 123456
 
 ## new features Implementation
 
-1. Processed Order List 
-2. Click order on map to cancel route
-3. Moving of Depot
+1. Processed Order List ✅
+2. Click order on map to cancel route ✅
+3. Moving of Depot ✅
+4. Optmizing should be based on Drivers on duty & period selected
+5. Wheh John Doe logs, there is no assigned route. The optmization has assigned 2 orders to him
+6. The Map should be able to filter the routes by driver.

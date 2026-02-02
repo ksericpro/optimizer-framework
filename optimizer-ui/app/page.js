@@ -65,6 +65,8 @@ export default function Dashboard() {
   const [periodAssignments, setPeriodAssignments] = useState([]);
   const [warehouse, setWarehouse] = useState(null);
   const [showWarehouseEditor, setShowWarehouseEditor] = useState(false);
+  const [showRouteDeleteConfirm, setShowRouteDeleteConfirm] = useState(false);
+  const [routeToDelete, setRouteToDelete] = useState(null);
 
   // const [toasts, setToasts] = useState([]); // Removed per user request
   const [panelMinimized, setPanelMinimized] = useState(false);
@@ -144,10 +146,17 @@ export default function Dashboard() {
         routesUrl += `?date=${selectedDate}`;
       }
 
-      const routesRes = await fetch(routesUrl);
-      if (routesRes.ok) {
-        const routesData = await routesRes.json();
-        setRoutes(routesData);
+      console.log('Fetching routes from:', routesUrl); // Debug log
+      try {
+        const routesRes = await fetch(routesUrl);
+        if (routesRes.ok) {
+          const routesData = await routesRes.json();
+          setRoutes(routesData);
+        } else {
+          console.error('Failed to fetch routes, status:', routesRes.status);
+        }
+      } catch (fetchErr) {
+        console.error('Network error fetching routes:', fetchErr);
       }
 
       // 2. Fetch Periods
@@ -311,6 +320,32 @@ export default function Dashboard() {
     } catch (err) {
       console.error('Error deleting pending orders:', err);
       addActivity('ERROR', 'Failed to delete pending orders.');
+    }
+  };
+
+  const handleWarehouseMove = (lat, lng) => {
+    setWarehouse(prev => ({ ...prev, lat: parseFloat(lat.toFixed(6)), lng: parseFloat(lng.toFixed(6)) }));
+  };
+
+  const handleRouteOrderClick = (route, stop) => {
+    setRouteToDelete(route);
+    setShowRouteDeleteConfirm(true);
+  };
+
+  const confirmDeleteRoute = async () => {
+    if (!routeToDelete) return;
+    try {
+      const res = await fetch(`${API_BASE}/routes/${routeToDelete.route_id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to delete route');
+
+      const data = await res.json();
+      addActivity('SYSTEM', data.message || `Route cancelled.`);
+      setShowRouteDeleteConfirm(false);
+      setRouteToDelete(null);
+      await fetchData();
+    } catch (err) {
+      console.error('Error deleting route:', err);
+      addActivity('ERROR', 'Failed to delete route.');
     }
   };
 
@@ -795,8 +830,10 @@ export default function Dashboard() {
                 pendingOrders={pendingOrders}
                 driverLocations={driverLocations}
                 onOrderClick={openOrderEditor}
+                onRouteOrderClick={handleRouteOrderClick}
                 focusedLocation={focusedLocation}
                 warehouse={warehouse}
+                onWarehouseMove={handleWarehouseMove}
               />
               <div className="map-overlay">
                 <div className="map-legend glass">
@@ -930,6 +967,12 @@ export default function Dashboard() {
                 <div className="tabs">
                   <TabButton label="Activity" active={activeInfoTab === 'activity'} onClick={() => setActiveInfoTab('activity')} />
                   <TabButton label={`Pending (${pendingOrders.length})`} active={activeInfoTab === 'pending'} onClick={() => setActiveInfoTab('pending')} />
+                  {(() => {
+                    const processedCount = routes.reduce((acc, r) => acc + (r.stops ? r.stops.length : 0), 0);
+                    return (
+                      <TabButton label={`Processed (${processedCount})`} active={activeInfoTab === 'processed'} onClick={() => setActiveInfoTab('processed')} />
+                    );
+                  })()}
                   <TabButton label="Schedule" active={activeInfoTab === 'schedule'} onClick={() => setActiveInfoTab('schedule')} />
                 </div>
               )}
@@ -1022,6 +1065,34 @@ export default function Dashboard() {
                           </button>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {activeInfoTab === 'processed' && (
+                    <div id="processed-list">
+                      {routes.length === 0 && (
+                        <div className="empty-state">No processed orders found</div>
+                      )}
+
+                      {routes.flatMap(r => r.stops.map(s => ({ ...s, route_id: r.route_id, driver_name: r.full_name })))
+                        .sort((a, b) => new Date(a.estimated_arrival_time) - new Date(b.estimated_arrival_time))
+                        .map(stop => (
+                          <div
+                            key={stop.stop_id}
+                            onClick={() => setFocusedLocation({ lat: stop.lat, lng: stop.lng })}
+                            className="pending-order-card"
+                            style={{ cursor: 'pointer', position: 'relative', borderLeft: `3px solid var(--${stop.stop_status === 'DELIVERED' ? 'delivered' : 'assigned'})` }}
+                          >
+                            <div className="po-address">{stop.delivery_address}</div>
+                            <div className="po-meta">
+                              Status: <span className={`status-tag ${stop.stop_status.toLowerCase()}`}>{stop.stop_status}</span>
+                              | Driver: {stop.driver_name}
+                            </div>
+                            <div className="po-meta" style={{ fontSize: '0.7rem' }}>
+                              ETA: {new Date(stop.estimated_arrival_time).toLocaleTimeString()}
+                            </div>
+                          </div>
+                        ))}
                     </div>
                   )}
 
@@ -1627,6 +1698,7 @@ export default function Dashboard() {
                 <div className="form-group">
                   <label>Latitude</label>
                   <input
+                    key={`lat-${warehouse?.lat}`}
                     type="number"
                     name="lat"
                     step="any"
@@ -1637,6 +1709,7 @@ export default function Dashboard() {
                 <div className="form-group">
                   <label>Longitude</label>
                   <input
+                    key={`lng-${warehouse?.lng}`}
                     type="number"
                     name="lng"
                     step="any"
@@ -1659,6 +1732,33 @@ export default function Dashboard() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Route Cancel Confirmation Modal */}
+      {showRouteDeleteConfirm && (
+        <div className="editor-overlay active glass">
+          <div className="editor-header" style={{ borderBottom: 'none' }}>
+            <h3>Confirm Route Cancellation</h3>
+            <button onClick={() => setShowRouteDeleteConfirm(false)} className="close-btn">&times;</button>
+          </div>
+          <div className="editor-body" style={{ padding: '2rem', textAlign: 'center' }}>
+            <p style={{ marginBottom: '2rem', fontSize: '1.1rem' }}>
+              Are you sure you want to cancel the route assigned to <b>{routeToDelete?.full_name || 'Driver'}</b>?
+              <br />
+              <span style={{ fontSize: '0.9rem', color: 'var(--text-dim)' }}>
+                This will reset <b>{routeToDelete?.stops?.length || 0}</b> orders to PENDING.
+              </span>
+            </p>
+            <div className="form-actions" style={{ justifyContent: 'center' }}>
+              <button onClick={confirmDeleteRoute} className="btn btn-danger">
+                Yes, Cancel Route
+              </button>
+              <button onClick={() => setShowRouteDeleteConfirm(false)} className="btn btn-secondary">
+                No, Keep Route
+              </button>
+            </div>
           </div>
         </div>
       )}

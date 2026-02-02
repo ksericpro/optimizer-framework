@@ -133,7 +133,7 @@ async def startup_event():
 # Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Explicitly allow the frontend dev server
+    allow_origins=["http://localhost:3000", "http://localhost:8000", "http://127.0.0.1:3000", "http://127.0.0.1:8000"],
     allow_credentials=True,
     allow_methods=["*"],  # Allow all methods
     allow_headers=["*"],  # Allow all headers
@@ -993,6 +993,45 @@ async def clear_all_routes(date: Optional[str] = None):
         await sio.emit('fleet_update', {'message': f'Routes for {target_date} cleared'})
         
         return {"message": f"All routes for {target_date} have been cleared and orders reset to pending."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/routes/{route_id}")
+async def delete_route(route_id: str):
+    """Deletes a specific route and resets associated orders to PENDING."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        
+        # 1. Check if route exists
+        cur.execute("SELECT id FROM routes WHERE id = %s", (route_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Route not found")
+        
+        # 2. Update orders to PENDING
+        cur.execute("""
+            UPDATE orders 
+            SET status = 'PENDING' 
+            WHERE id IN (
+                SELECT order_id 
+                FROM route_stops 
+                WHERE route_id = %s
+            )
+        """, (route_id,))
+        
+        # 3. Delete route stops and route
+        cur.execute("DELETE FROM route_stops WHERE route_id = %s", (route_id,))
+        cur.execute("DELETE FROM routes WHERE id = %s", (route_id,))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        await sio.emit('fleet_update', {'message': f'Route {route_id} deleted'})
+        
+        return {"message": f"Route {route_id} deleted and orders reset to pending."}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 async def get_driver_route(driver_id: str, current_driver: str = Depends(get_current_driver)):
