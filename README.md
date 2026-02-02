@@ -156,14 +156,14 @@ uv run ./scripts/verify_data.py
 uv run uvicorn api.main:app_with_sio --reload
 
 ## dashboard
-http://localhost:8000/dashboard
-http://localhost:8000/driver
+- http://localhost:8000/dashboard
+- http://localhost:8000/driver
 
 ## Next js
 cd optimizer-ui
 npm run dev
-http://localhost:3000
-http://localhost:3000/driver
+- http://localhost:3000
+-http://localhost:3000/driver
 
 john 123456
 
